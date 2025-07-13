@@ -1,4 +1,13 @@
 {
+  "scopedRegistries": [
+    {
+      "name": "OpenUPM",
+      "url": "https://package.openupm.com",
+      "scopes": [
+        "com.unity.cv"
+      ]
+    }
+  ],
   "dependencies": {
     "com.unity.collab-proxy": "2.8.2",
     "com.unity.feature.development": "1.0.1",
@@ -36,6 +45,10 @@
     "com.unity.modules.video": "1.0.0",
     "com.unity.modules.vr": "1.0.0",
     "com.unity.modules.wind": "1.0.0",
-    "com.unity.modules.xr": "1.0.0"
+    "com.unity.modules.xr": "1.0.0",
+    "com.unity.xr.arfoundation": "6.2.0",
+    "com.unity.xr.arcore": "6.2.0",
+    "com.unity.xr.arkit": "6.2.0",
+    "com.unity.cv.opencv": "1.5.0"
   }
 }
