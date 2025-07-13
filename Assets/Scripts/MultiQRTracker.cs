@@ -4,14 +4,6 @@ using UnityEngine.UI;
 using ZXing;
 using ZXing.Common;
 
-/// <summary>
-/// Detects and tracks multiple QR codes from a camera feed.
-/// Requires the ZXing.Net library.
-/// Attach this script to a GameObject in the scene.
-/// The boundingBoxPrefab should be a UI element that contains an Image
-/// for the border and an optional Text component for displaying the
-/// decoded string.
-/// </summary>
 public class MultiQRTracker : MonoBehaviour
 {
     [Header("Camera")] public RawImage cameraOutput;
@@ -30,7 +22,7 @@ public class MultiQRTracker : MonoBehaviour
         cameraOutput.texture = _webCam;
         _webCam.Play();
         UpdateOrientation();
-        
+
         _reader = new BarcodeReaderGeneric
         {
             AutoRotate = false,
@@ -49,7 +41,6 @@ public class MultiQRTracker : MonoBehaviour
 
         UpdateOrientation();
 
-        // Keep aspect ratio
         if (fitter != null)
             fitter.aspectRatio = (float)_webCam.width / _webCam.height;
 
@@ -58,8 +49,26 @@ public class MultiQRTracker : MonoBehaviour
 
     void ProcessFrame()
     {
-        var pixels = _webCam.GetPixels32();
-        var results = _reader.DecodeMultiple(pixels, _webCam.width, _webCam.height);
+        // 1) Leemos los píxeles como Color32[]
+        Color32[] pixels32 = _webCam.GetPixels32();
+
+        // 2) Convertimos a byte[] RGB24 (r, g, b por píxel)
+        int len = pixels32.Length;
+        byte[] raw = new byte[len * 3];
+        for (int i = 0; i < len; i++)
+        {
+            int j = i * 3;
+            raw[j    ] = pixels32[i].r;   // R
+            raw[j + 1] = pixels32[i].g;   // G
+            raw[j + 2] = pixels32[i].b;   // B
+        }
+
+     
+        var results = _reader.DecodeMultiple(
+                 raw,                     // <- aquí va el byte[]
+                 _webCam.width,
+                 _webCam.height,
+                 RGBLuminanceSource.BitmapFormat.RGB24); // usaste RGB24// o RGB24 según tu plataforma
 
         foreach (var box in _boxes) Destroy(box.gameObject);
         _boxes.Clear();
@@ -109,4 +118,3 @@ public class MultiQRTracker : MonoBehaviour
         }
     }
 }
-
