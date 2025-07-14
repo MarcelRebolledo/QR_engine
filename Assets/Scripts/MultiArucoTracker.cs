@@ -73,19 +73,18 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
-        using var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
+        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
+        Std.VectorVectorPoint2f corners;
+        Std.VectorInt ids;
 
-        using var corners = new Std.VectorVectorPoint2f(); // std::vector< std::vector<cv::Point2f> >
-        using var ids     = new Std.VectorInt();           // std::vector<int>
-
-        Aruco.DetectMarkers(frame, dictionary, corners, ids, detectorParams);
+        Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
 
         // ③ Crear/actualizar anclas ------------------------------------------
         if (ids.Size() == 0) return;
 
         for (int i = 0; i < ids.Size(); ++i)
         {
-            int id = ids.At(i);
+            int id = ids.At((uint)i);
             if (anchors.ContainsKey(id)) continue;        // Ya existe
 
             // (Ejemplo) coloca el objeto 30 cm frente a la cámara.
