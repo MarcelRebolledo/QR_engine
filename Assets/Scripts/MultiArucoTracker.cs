@@ -5,6 +5,8 @@ using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using ArucoUnity.Plugin;          // Binding C# ➜ C++ (ArucoUnity)
 using Cv = ArucoUnity.Plugin.Cv;  // Alias para abreviar las clases de OpenCV
+using Aruco = ArucoUnity.Plugin.Aruco;   // Alias para funciones ArUco
+using Std = ArucoUnity.Plugin.Std;       // Alias para contenedores std::vector
 
 /// <summary>
 /// Detecta múltiples marcadores ArUco con la librería ArucoUnity (OpenCV 4) y coloca un <see cref="contentPrefab"/> sobre cada id nuevo.
@@ -30,11 +32,11 @@ public sealed class MultiArucoTracker : MonoBehaviour
     [Header("Detection Settings")]
     [Tooltip("Tamaño físico del lado del marcador en metros (‑1 ➜ sin estimar pose)")]
     public float markerSideMeters = 0.025f;
-    [Tooltip("Diccionario predefinido OpenCV: DICT_4X4_50, DICT_4X4_100 …")]
-    public Aruco.PredefinedDictionaryName dictionaryName = Aruco.PredefinedDictionaryName.DICT_4X4_50;
+    [Tooltip("Diccionario predefinido OpenCV: Dict4x4_50, Dict4x4_100 …")]
+    public Aruco.PredefinedDictionaryName dictionaryName = Aruco.PredefinedDictionaryName.Dict4x4_50;
 
     Aruco.Dictionary dictionary;                     // Tabla binaria de marcadores
-    Cv.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
+    Aruco.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
     readonly Dictionary<int, ARAnchor> anchors = new();
 
     //──────────────────────────────────────── Lifecycle
@@ -44,7 +46,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
         if (!anchorManager) anchorManager = FindAnyObjectByType<ARAnchorManager>();
 
         dictionary     = Aruco.GetPredefinedDictionary(dictionaryName);
-        detectorParams = Aruco.DetectorParametersCreate();
+        detectorParams = new Aruco.DetectorParameters();
     }
 
     void OnEnable()  => camManager.frameReceived += OnFrame;
@@ -71,10 +73,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
-        using var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Mat.Type.CV_8UC3, managed);
+        using var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
 
-        using var corners = new Cv.Point2fVectorVector(); // std::vector< std::vector<cv::Point2f> >
-        using var ids     = new Cv.IntVector();           // std::vector<int>
+        using var corners = new Std.VectorVectorPoint2f(); // std::vector< std::vector<cv::Point2f> >
+        using var ids     = new Std.VectorInt();           // std::vector<int>
 
         Aruco.DetectMarkers(frame, dictionary, corners, ids, detectorParams);
 
