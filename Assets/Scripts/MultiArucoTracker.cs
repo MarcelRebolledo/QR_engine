@@ -74,7 +74,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
         Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
-
         Std.VectorVectorPoint2f corners;
         Std.VectorInt ids;
 
