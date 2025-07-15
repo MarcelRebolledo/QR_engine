@@ -41,6 +41,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
     Aruco.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
     readonly Dictionary<int, ARAnchor> anchors = new();
 
+    Cv.Mat cameraMatrix;
+    Cv.Mat distCoeffs;
+
 
     // ─────────────────────────────── NEW: UI debug
     [Header("Debug UI")]
@@ -63,6 +66,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
         dictionary = Aruco.GetPredefinedDictionary(dictionaryName);
         detectorParams = new Aruco.DetectorParameters();
 
+        cameraMatrix = new Cv.Mat();
+        distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
+
         Log($"Aruco dict: {dictionaryName}");
     }
 
@@ -78,6 +84,20 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Log($"cpu ok? {gotImage}");
 
         if (!gotImage) return;
+
+        if (!camManager.TryGetIntrinsics(out var intr))
+        {
+            cpuImage.Dispose();
+            return;
+        }
+
+        double[] camMatrixArr = new double[9]
+        {
+            intr.focalLength.x, 0, intr.principalPoint.x,
+            0, intr.focalLength.y, intr.principalPoint.y,
+            0, 0, 1
+        };
+        cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
 
         var conv = new XRCpuImage.ConversionParams
         {
@@ -101,52 +121,47 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
         Log($"Detected {ids.Size()} markers");
 
-
-        // ③ Crear/actualizar anclas ------------------------------------------
         if (ids.Size() == 0) return;
+
+        Std.VectorVec3d rvecs;
+        Std.VectorVec3d tvecs;
+        Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
 
         for (int i = 0; i < ids.Size(); ++i)
         {
             int id = ids.At((uint)i);
-            if (anchors.ContainsKey(id)) continue;        // Ya existe
 
-            // (Ejemplo) coloca el objeto 30 cm frente a la cámara.
-            Pose pose = new(
-                camManager.transform.position + camManager.transform.forward * 0.30f,
-                camManager.transform.rotation);
+            Vector3 localPos = tvecs.At((uint)i).ToPosition();
+            Quaternion localRot = rvecs.At((uint)i).ToRotation();
 
+            Pose worldPose = new Pose(
+                camManager.transform.TransformPoint(localPos),
+                camManager.transform.rotation * localRot);
 
-            // ─── Crear ancla ───────────────────────────────────────
-            ARAnchor anchor = null;
-
-            // Si hay AnchorManager y su subsistema admite alta sincrónica
-            if (anchorManager &&
-                anchorManager.subsystem != null &&
-                anchorManager.subsystem.TryAddAnchor(pose, out XRAnchor xrAnchor))
+            if (!anchors.TryGetValue(id, out var anchor) || anchor == null)
             {
-                // ARAnchorManager generará el ARAnchor la siguiente frame;
-                // lo consultamos de inmediato (puede ser null si aún está pending).
-                anchor = anchorManager.GetAnchor(xrAnchor.trackableId);
-            }
+                // ─── Crear ancla ───────────────────────────────────────
+                ARAnchor newAnchor = null;
+                if (anchorManager && anchorManager.subsystem != null &&
+                    anchorManager.subsystem.TryAddAnchor(worldPose, out XRAnchor xrAnchor))
+                {
+                    newAnchor = anchorManager.GetAnchor(xrAnchor.trackableId);
+                }
 
-            // Fallback: editor, simulación o proveedor sin add sincrónico
-            if (!anchor)
+                if (!newAnchor)
+                {
+                    var go = new GameObject($"aruco_{id}");
+                    go.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
+                    newAnchor = go.AddComponent<ARAnchor>();
+                }
+
+                anchors[id] = newAnchor;
+                Instantiate(contentPrefab, newAnchor.transform, false);
+            }
+            else
             {
-                var go = new GameObject($"aruco_{id}");
-                go.transform.SetPositionAndRotation(pose.position, pose.rotation);
-                anchor = go.AddComponent<ARAnchor>();
+                anchor.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
             }
-
-            if (!anchor)
-            {
-                // Fallback sin AnchorManager (p.ej. editor)
-                var go = new GameObject($"aruco_{id}");
-                go.transform.SetPositionAndRotation(pose.position, pose.rotation);
-                anchor = go.AddComponent<ARAnchor>();
-            }
-
-            anchors[id] = anchor;
-            Instantiate(contentPrefab, anchor.transform, false);
         }
     }
     
