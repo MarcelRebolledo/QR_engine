@@ -43,7 +43,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
     Cv.Mat cameraMatrix;
     Cv.Mat distCoeffs;
+
     bool intrinsicsInit;
+
 
 
     // ─────────────────────────────── NEW: UI debug
@@ -69,7 +71,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         cameraMatrix = new Cv.Mat();
         distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
+
         intrinsicsInit = false;
+
 
         Log($"Aruco dict: {dictionaryName}");
     }
@@ -86,6 +90,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Log($"cpu ok? {gotImage}");
 
         if (!gotImage) return;
+
 
         // Obtener intrínsecos solo una vez
         if (!intrinsicsInit)
@@ -105,6 +110,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
             cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
             intrinsicsInit = true;
         }
+
 
         var conv = new XRCpuImage.ConversionParams
         {
@@ -128,6 +134,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
         Log($"Detected {ids.Size()} markers");
 
+
         if (ids.Size() == 0)
         {
             frame.Dispose();
@@ -141,12 +148,19 @@ public sealed class MultiArucoTracker : MonoBehaviour
             Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
         }
 
+
+        Std.VectorVec3d rvecs;
+        Std.VectorVec3d tvecs;
+        Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
+
         for (int i = 0; i < ids.Size(); ++i)
         {
             int id = ids.At((uint)i);
 
+
             Vector3 localPos = tvecs != null ? tvecs.At((uint)i).ToPosition() : Vector3.zero;
             Quaternion localRot = rvecs != null ? rvecs.At((uint)i).ToRotation() : Quaternion.identity;
+
 
             Pose worldPose = new Pose(
                 camManager.transform.TransformPoint(localPos),
