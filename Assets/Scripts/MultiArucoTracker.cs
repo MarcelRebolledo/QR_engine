@@ -7,7 +7,9 @@ using ArucoUnity.Plugin;          // Binding C# ➜ C++ (ArucoUnity)
 using Cv = ArucoUnity.Plugin.Cv;  // Alias para abreviar las clases de OpenCV
 using Aruco = ArucoUnity.Plugin.Aruco;   // Alias para funciones ArUco
 using Std = ArucoUnity.Plugin.Std;       // Alias para contenedores std::vector
-
+using TMPro;
+using System.Text;
+using UnityEngine.UI;
 /// <summary>
 /// Detecta múltiples marcadores ArUco con la librería ArucoUnity (OpenCV 4) y coloca un <see cref="contentPrefab"/> sobre cada id nuevo.
 /// Compatible con <b>Unity 6 LTS</b> + <b>AR Foundation 6</b> (AR Core / AR Kit).
@@ -39,31 +41,50 @@ public sealed class MultiArucoTracker : MonoBehaviour
     Aruco.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
     readonly Dictionary<int, ARAnchor> anchors = new();
 
+
+    // ─────────────────────────────── NEW: UI debug
+    [Header("Debug UI")]
+    public TMP_Text debugText;
+    public ScrollRect scrollRect;   // 👈 referencia al Scroll View
+    public int maxLines = 200;
+
+    readonly StringBuilder logBuffer = new();// guarda el histórico
+
+
+
+
+
     //──────────────────────────────────────── Lifecycle
     void Awake()
     {
-        if (!camManager)    camManager    = GetComponent<ARCameraManager>();
+        if (!camManager) camManager = GetComponent<ARCameraManager>();
         if (!anchorManager) anchorManager = FindAnyObjectByType<ARAnchorManager>();
 
-        dictionary     = Aruco.GetPredefinedDictionary(dictionaryName);
+        dictionary = Aruco.GetPredefinedDictionary(dictionaryName);
         detectorParams = new Aruco.DetectorParameters();
+
+        Log($"Aruco dict: {dictionaryName}");
     }
 
-    void OnEnable()  => camManager.frameReceived += OnFrame;
+    void OnEnable() => camManager.frameReceived += OnFrame;
     void OnDisable() => camManager.frameReceived -= OnFrame;
 
     //──────────────────────────────────────── Frame loop
     void OnFrame(ARCameraFrameEventArgs _)
     {
         // ① CPU image ---------------------------------------------------------
-        if (!camManager.TryAcquireLatestCpuImage(out var cpuImage)) return;
+     
+        bool gotImage = camManager.TryAcquireLatestCpuImage(out var cpuImage);
+        Log($"cpu ok? {gotImage}");
+
+        if (!gotImage) return;
 
         var conv = new XRCpuImage.ConversionParams
         {
-            inputRect        = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+            inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
             outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat     = TextureFormat.RGB24,        // 3 canales uint8
-            transformation   = XRCpuImage.Transformation.MirrorY
+            outputFormat = TextureFormat.RGB24,        // 3 canales uint8
+            transformation = XRCpuImage.Transformation.MirrorY
         };
 
         int byteCount = cpuImage.GetConvertedDataSize(conv);
@@ -78,6 +99,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Std.VectorInt ids;
 
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
+        Log($"Detected {ids.Size()} markers");
+
 
         // ③ Crear/actualizar anclas ------------------------------------------
         if (ids.Size() == 0) return;
@@ -92,7 +115,28 @@ public sealed class MultiArucoTracker : MonoBehaviour
                 camManager.transform.position + camManager.transform.forward * 0.30f,
                 camManager.transform.rotation);
 
-            ARAnchor anchor = anchorManager ? anchorManager.AddAnchor(pose) : null;
+
+            // ─── Crear ancla ───────────────────────────────────────
+            ARAnchor anchor = null;
+
+            // Si hay AnchorManager y su subsistema admite alta sincrónica
+            if (anchorManager &&
+                anchorManager.subsystem != null &&
+                anchorManager.subsystem.TryAddAnchor(pose, out XRAnchor xrAnchor))
+            {
+                // ARAnchorManager generará el ARAnchor la siguiente frame;
+                // lo consultamos de inmediato (puede ser null si aún está pending).
+                anchor = anchorManager.GetAnchor(xrAnchor.trackableId);
+            }
+
+            // Fallback: editor, simulación o proveedor sin add sincrónico
+            if (!anchor)
+            {
+                var go = new GameObject($"aruco_{id}");
+                go.transform.SetPositionAndRotation(pose.position, pose.rotation);
+                anchor = go.AddComponent<ARAnchor>();
+            }
+
             if (!anchor)
             {
                 // Fallback sin AnchorManager (p.ej. editor)
@@ -104,5 +148,34 @@ public sealed class MultiArucoTracker : MonoBehaviour
             anchors[id] = anchor;
             Instantiate(contentPrefab, anchor.transform, false);
         }
+    }
+    
+
+    // ─────────────────────────────── helpers ───────────────────────────────
+    void Log(string msg)
+    {
+        Debug.Log(msg);
+
+        if (!debugText) return;
+
+        logBuffer.AppendLine(msg);
+
+        // recorta si excede el límite
+        int excess = logBuffer.ToString().Split('\n').Length - maxLines;
+        if (excess > 0)
+        {
+            // descarta las primeras 'excess' líneas
+            string[] lines = logBuffer.ToString().Split('\n');
+            logBuffer.Clear();
+            for (int i = excess; i < lines.Length; i++)
+                logBuffer.AppendLine(lines[i]);
+        }
+
+        debugText.text = logBuffer.ToString();
+
+        // ─── fuerza actualización de layout y baja el scroll ───
+        Canvas.ForceUpdateCanvases();
+        if (scrollRect)
+            scrollRect.verticalNormalizedPosition = 0f; // 0 = abajo
     }
 }
