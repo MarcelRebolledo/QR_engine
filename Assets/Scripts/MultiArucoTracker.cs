@@ -41,6 +41,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
     Aruco.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
     readonly Dictionary<int, ARAnchor> anchors = new();
 
+    Cv.Mat cameraMatrix;
+    Cv.Mat distCoeffs;
+    bool intrinsicsInit;
+
 
     // ─────────────────────────────── NEW: UI debug
     [Header("Debug UI")]
@@ -63,6 +67,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
         dictionary = Aruco.GetPredefinedDictionary(dictionaryName);
         detectorParams = new Aruco.DetectorParameters();
 
+        cameraMatrix = new Cv.Mat();
+        distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
+        intrinsicsInit = false;
+
         Log($"Aruco dict: {dictionaryName}");
     }
 
@@ -79,11 +87,30 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         if (!gotImage) return;
 
+        // Obtener intrínsecos solo una vez
+        if (!intrinsicsInit)
+        {
+            if (!camManager.TryGetIntrinsics(out var intr))
+            {
+                cpuImage.Dispose();
+                return;
+            }
+
+            double[] camMatrixArr =
+            {
+                intr.focalLength.x, 0, intr.principalPoint.x,
+                0, intr.focalLength.y, intr.principalPoint.y,
+                0, 0, 1
+            };
+            cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
+            intrinsicsInit = true;
+        }
+
         var conv = new XRCpuImage.ConversionParams
         {
             inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
             outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat = TextureFormat.RGB24,        // 3 canales uint8
+            outputFormat = TextureFormat.R8,        // escala de grises
             transformation = XRCpuImage.Transformation.MirrorY
         };
 
@@ -94,60 +121,64 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
-        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
+        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, managed);
         Std.VectorVectorPoint2f corners;
         Std.VectorInt ids;
 
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
         Log($"Detected {ids.Size()} markers");
 
+        if (ids.Size() == 0)
+        {
+            frame.Dispose();
+            return;
+        }
 
-        // ③ Crear/actualizar anclas ------------------------------------------
-        if (ids.Size() == 0) return;
+        Std.VectorVec3d rvecs = null;
+        Std.VectorVec3d tvecs = null;
+        if (markerSideMeters > 0)
+        {
+            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
+        }
 
         for (int i = 0; i < ids.Size(); ++i)
         {
             int id = ids.At((uint)i);
-            if (anchors.ContainsKey(id)) continue;        // Ya existe
 
-            // (Ejemplo) coloca el objeto 30 cm frente a la cámara.
-            Pose pose = new(
-                camManager.transform.position + camManager.transform.forward * 0.30f,
-                camManager.transform.rotation);
+            Vector3 localPos = tvecs != null ? tvecs.At((uint)i).ToPosition() : Vector3.zero;
+            Quaternion localRot = rvecs != null ? rvecs.At((uint)i).ToRotation() : Quaternion.identity;
 
+            Pose worldPose = new Pose(
+                camManager.transform.TransformPoint(localPos),
+                camManager.transform.rotation * localRot);
 
-            // ─── Crear ancla ───────────────────────────────────────
-            ARAnchor anchor = null;
-
-            // Si hay AnchorManager y su subsistema admite alta sincrónica
-            if (anchorManager &&
-                anchorManager.subsystem != null &&
-                anchorManager.subsystem.TryAddAnchor(pose, out XRAnchor xrAnchor))
+            if (!anchors.TryGetValue(id, out var anchor) || anchor == null)
             {
-                // ARAnchorManager generará el ARAnchor la siguiente frame;
-                // lo consultamos de inmediato (puede ser null si aún está pending).
-                anchor = anchorManager.GetAnchor(xrAnchor.trackableId);
-            }
+                // ─── Crear ancla ───────────────────────────────────────
+                ARAnchor newAnchor = null;
+                if (anchorManager && anchorManager.subsystem != null &&
+                    anchorManager.subsystem.TryAddAnchor(worldPose, out XRAnchor xrAnchor))
+                {
+                    newAnchor = anchorManager.GetAnchor(xrAnchor.trackableId);
+                }
 
-            // Fallback: editor, simulación o proveedor sin add sincrónico
-            if (!anchor)
+                if (!newAnchor)
+                {
+                    var go = new GameObject($"aruco_{id}");
+                    go.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
+                    newAnchor = go.AddComponent<ARAnchor>();
+                }
+
+                anchors[id] = newAnchor;
+                Instantiate(contentPrefab, newAnchor.transform, false);
+            }
+            else
             {
-                var go = new GameObject($"aruco_{id}");
-                go.transform.SetPositionAndRotation(pose.position, pose.rotation);
-                anchor = go.AddComponent<ARAnchor>();
+                anchor.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
             }
-
-            if (!anchor)
-            {
-                // Fallback sin AnchorManager (p.ej. editor)
-                var go = new GameObject($"aruco_{id}");
-                go.transform.SetPositionAndRotation(pose.position, pose.rotation);
-                anchor = go.AddComponent<ARAnchor>();
-            }
-
-            anchors[id] = anchor;
-            Instantiate(contentPrefab, anchor.transform, false);
         }
+
+        frame.Dispose();
     }
     
 
