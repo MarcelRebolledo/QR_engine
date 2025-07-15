@@ -44,6 +44,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
     Cv.Mat cameraMatrix;
     Cv.Mat distCoeffs;
 
+    bool intrinsicsInit;
+
+
 
     // ─────────────────────────────── NEW: UI debug
     [Header("Debug UI")]
@@ -69,6 +72,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
         cameraMatrix = new Cv.Mat();
         distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
 
+        intrinsicsInit = false;
+
+
         Log($"Aruco dict: {dictionaryName}");
     }
 
@@ -85,25 +91,32 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         if (!gotImage) return;
 
-        if (!camManager.TryGetIntrinsics(out var intr))
+
+        // Obtener intrínsecos solo una vez
+        if (!intrinsicsInit)
         {
-            cpuImage.Dispose();
-            return;
+            if (!camManager.TryGetIntrinsics(out var intr))
+            {
+                cpuImage.Dispose();
+                return;
+            }
+
+            double[] camMatrixArr =
+            {
+                intr.focalLength.x, 0, intr.principalPoint.x,
+                0, intr.focalLength.y, intr.principalPoint.y,
+                0, 0, 1
+            };
+            cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
+            intrinsicsInit = true;
         }
 
-        double[] camMatrixArr = new double[9]
-        {
-            intr.focalLength.x, 0, intr.principalPoint.x,
-            0, intr.focalLength.y, intr.principalPoint.y,
-            0, 0, 1
-        };
-        cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
 
         var conv = new XRCpuImage.ConversionParams
         {
             inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
             outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat = TextureFormat.RGB24,        // 3 canales uint8
+            outputFormat = TextureFormat.R8,        // escala de grises
             transformation = XRCpuImage.Transformation.MirrorY
         };
 
@@ -114,14 +127,27 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
-        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC3, managed);
+        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, managed);
         Std.VectorVectorPoint2f corners;
         Std.VectorInt ids;
 
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
         Log($"Detected {ids.Size()} markers");
 
-        if (ids.Size() == 0) return;
+
+        if (ids.Size() == 0)
+        {
+            frame.Dispose();
+            return;
+        }
+
+        Std.VectorVec3d rvecs = null;
+        Std.VectorVec3d tvecs = null;
+        if (markerSideMeters > 0)
+        {
+            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
+        }
+
 
         Std.VectorVec3d rvecs;
         Std.VectorVec3d tvecs;
@@ -131,8 +157,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
         {
             int id = ids.At((uint)i);
 
-            Vector3 localPos = tvecs.At((uint)i).ToPosition();
-            Quaternion localRot = rvecs.At((uint)i).ToRotation();
+
+            Vector3 localPos = tvecs != null ? tvecs.At((uint)i).ToPosition() : Vector3.zero;
+            Quaternion localRot = rvecs != null ? rvecs.At((uint)i).ToRotation() : Quaternion.identity;
+
 
             Pose worldPose = new Pose(
                 camManager.transform.TransformPoint(localPos),
@@ -163,6 +191,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
                 anchor.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
             }
         }
+
+        frame.Dispose();
     }
     
 
