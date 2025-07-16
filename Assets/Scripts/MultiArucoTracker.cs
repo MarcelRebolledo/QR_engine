@@ -141,7 +141,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         if (ids.Size() == 0)
         {
-            frame.Dispose();
             return;
         }
 
@@ -191,7 +190,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
             }
         }
 
-        frame.Dispose();
     }
 
     // ---------- Funciones a completar ----------
