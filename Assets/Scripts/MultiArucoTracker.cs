@@ -125,6 +125,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
         cpuImage.Convert(conv, buffer);
         cpuImage.Dispose();
 
+        bool portrait =
+            Screen.orientation == ScreenOrientation.Portrait ||
+            Screen.orientation == ScreenOrientation.PortraitUpsideDown;
+
         // ② Native → OpenCV ---------------------------------------------------
         byte[] managed = buffer.ToArray();
         Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, managed);
@@ -148,18 +152,13 @@ public sealed class MultiArucoTracker : MonoBehaviour
             Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
         }
 
-
-        Std.VectorVec3d rvecs;
-        Std.VectorVec3d tvecs;
-        Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
-
         for (int i = 0; i < ids.Size(); ++i)
         {
             int id = ids.At((uint)i);
 
 
-            Vector3 localPos = tvecs != null ? tvecs.At((uint)i).ToPosition() : Vector3.zero;
-            Quaternion localRot = rvecs != null ? rvecs.At((uint)i).ToRotation() : Quaternion.identity;
+            Vector3 localPos  = tvecs != null ? Cv2UnityPos(tvecs.At((uint)i), portrait) : Vector3.zero;
+            Quaternion localRot = rvecs != null ? Cv2UnityRot(rvecs.At((uint)i), portrait) : Quaternion.identity;
 
 
             Pose worldPose = new Pose(
@@ -194,7 +193,48 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         frame.Dispose();
     }
-    
+
+    // ---------- Funciones a completar ----------
+    static Vector3 Cv2UnityPos(Cv.Vec3d t, bool portrait)
+    {
+        double x = t.Get(0);
+        double y = t.Get(1);
+        double z = t.Get(2);
+
+        if (portrait)
+        {
+            double tmp = x;
+            x = y;
+            y = tmp;
+        }
+
+        return new Vector3((float)x, -(float)y, (float)z);
+    }
+
+    static Quaternion Cv2UnityRot(Cv.Vec3d r, bool portrait)
+    {
+        double x = r.Get(0);
+        double y = r.Get(1);
+        double z = r.Get(2);
+
+        if (portrait)
+        {
+            double tmp = x;
+            x = y;
+            y = tmp;
+        }
+
+        y = -y;
+
+        double angleRad = System.Math.Sqrt(x * x + y * y + z * z);
+        if (angleRad < 1e-12)
+            return Quaternion.identity;
+
+        Vector3 axis = new Vector3((float)(x / angleRad), (float)(y / angleRad), (float)(z / angleRad));
+        float angleDeg = (float)(angleRad * Mathf.Rad2Deg);
+        return Quaternion.AngleAxis(angleDeg, axis);
+    }
+
 
     // ─────────────────────────────── helpers ───────────────────────────────
     void Log(string msg)
