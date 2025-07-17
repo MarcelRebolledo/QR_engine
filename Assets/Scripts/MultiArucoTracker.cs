@@ -58,7 +58,16 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
 
 
+    void Start()
+    {
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
+    }
 
+    void OnApplicationQuit()
+    {
+        // Restaurar el comportamiento por defecto (opcional)
+        Screen.sleepTimeout = SleepTimeout.SystemSetting;
+    }
 
     //──────────────────────────────────────── Lifecycle
     void Awake()
@@ -117,7 +126,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
             inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
             outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
             outputFormat = TextureFormat.R8,        // escala de grises
-            transformation = XRCpuImage.Transformation.MirrorY
+            transformation = XRCpuImage.Transformation.MirrorX
         };
 
         int byteCount = cpuImage.GetConvertedDataSize(conv);
