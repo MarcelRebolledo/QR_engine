@@ -94,7 +94,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
     void OnFrame(ARCameraFrameEventArgs _)
     {
         // ① CPU image ---------------------------------------------------------
-     
+
         bool gotImage = camManager.TryAcquireLatestCpuImage(out var cpuImage);
         Log($"cpu ok? {gotImage}");
 
@@ -148,8 +148,25 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Log($"Detected {ids.Size()} markers");
 
 
+        var detectedIds = new HashSet<int>();
+        for (int i = 0; i < ids.Size(); ++i)
+        {
+            detectedIds.Add(ids.At((uint)i));
+        }
+
+
         if (ids.Size() == 0)
         {
+            // Destruir anclas existentes
+            foreach (var kvp in anchors)
+            {
+                var anchor = kvp.Value;
+                if (anchorManager != null && anchorManager.subsystem != null)
+                    anchorManager.RemoveAnchor(anchor);
+                else
+                    Destroy(anchor.gameObject);
+            }
+            anchors.Clear();
             return;
         }
 
@@ -165,9 +182,12 @@ public sealed class MultiArucoTracker : MonoBehaviour
             int id = ids.At((uint)i);
 
 
-            Vector3 localPos  = tvecs != null ? Cv2UnityPos(tvecs.At((uint)i), portrait) : Vector3.zero;
+            Vector3 localPos = tvecs != null ? Cv2UnityPos(tvecs.At((uint)i), portrait) : Vector3.zero;
             Quaternion localRot = rvecs != null ? Cv2UnityRot(rvecs.At((uint)i), portrait) : Quaternion.identity;
 
+            // después de calcular localPos y localRot…
+            if (localPos == Vector3.zero && localRot == Quaternion.identity)
+                continue;  // no crees nada si la pose es nula
 
             Pose worldPose = new Pose(
                 camManager.transform.TransformPoint(localPos),
@@ -197,6 +217,23 @@ public sealed class MultiArucoTracker : MonoBehaviour
             {
                 anchor.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
             }
+        }
+        
+
+        // **Eliminar anclas perdidas**:
+        //    busca en anchors.Keys los IDs que ya NO están en detectedIds
+        var toRemove = anchors.Keys.Where(oldId => !detectedIds.Contains(oldId)).ToList();
+        foreach (var oldId in toRemove)
+        {
+            ARAnchor anchor = anchors[oldId];
+
+            // Si usas ARAnchorManager:
+            if (anchorManager != null && anchorManager.subsystem != null)
+                anchorManager.RemoveAnchor(anchor);
+            else
+                Destroy(anchor.gameObject);
+
+            anchors.Remove(oldId);
         }
 
     }
