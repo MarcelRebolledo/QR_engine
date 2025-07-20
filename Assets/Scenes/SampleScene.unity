@@ -1003,7 +1003,6 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   camManager: {fileID: 1324098903}
-  anchorManager: {fileID: 331264289}
   defaultPrefab: {fileID: 3228870936901962627, guid: 8a219c35b97545846952249f6a020040,
     type: 3}
   customPrefabs:
@@ -1015,6 +1014,9 @@ MonoBehaviour:
   debugText: {fileID: 876535436}
   scrollRect: {fileID: 846923885}
   maxLines: 25
+  calibrationBoardPrefab: {fileID: 3228870936901962627, guid: 18d468b113c8cbf4884e409df89f994d,
+    type: 3}
+  boardUpdateThreshold: 0.02
 --- !u!114 &1498714275
 MonoBehaviour:
   m_ObjectHideFlags: 0
