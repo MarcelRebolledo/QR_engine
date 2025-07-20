@@ -3,130 +3,115 @@ using Unity.Collections;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
-using ArucoUnity.Plugin;          // Binding C# ➜ C++ (ArucoUnity)
-using Cv = ArucoUnity.Plugin.Cv;  // Alias para abreviar las clases de OpenCV
-using Aruco = ArucoUnity.Plugin.Aruco;   // Alias para funciones ArUco
-using Std = ArucoUnity.Plugin.Std;       // Alias para contenedores std::vector
+using ArucoUnity.Plugin;
+using Cv   = ArucoUnity.Plugin.Cv;
+using Aruco= ArucoUnity.Plugin.Aruco;
+using Std  = ArucoUnity.Plugin.Std;
 using TMPro;
 using System.Text;
 using UnityEngine.UI;
-/// <summary>
-/// Detecta múltiples marcadores ArUco con la librería ArucoUnity (OpenCV 4) y coloca un <see cref="contentPrefab"/> sobre cada id nuevo.
-/// Compatible con <b>Unity 6 LTS</b> + <b>AR Foundation 6</b> (AR Core / AR Kit).
-/// <para>
-/// » El código sólo usa APIs públicas incluidas en el paquete <i>ArucoUnityOA</i>, sin dependencias de pago.
-/// » Se ha depurado para que compile sin errores de espacio de nombres ni tipos faltantes.
-/// </para>
-/// </summary>
+using System.Linq;
+
 [RequireComponent(typeof(ARCameraManager))]
 public sealed class MultiArucoTracker : MonoBehaviour
 {
-    //──────────────────────────────────────── Managers & Prefab
+    const int   MAX_CONTENT_NODES = 15; // ⟵ máximo de prefabs simultáneos
+    const float DEBUG_FPS         = 4f;
+
+    // ────────────────── Inspector ──────────────────
     [Header("Managers")]
     [SerializeField] ARCameraManager camManager;
-    [SerializeField] ARAnchorManager anchorManager;   // Puede inyectarse desde la escena
+    [SerializeField] ARAnchorManager anchorManager;
 
-    [Header("Content")]
-    [Tooltip("Prefab que se instancia sobre cada marcador detectado")]
-    public GameObject contentPrefab;
+    [Header("Prefabs")]
+    public GameObject defaultPrefab;                // antes: contentPrefab
 
-    //──────────────────────────────────────── Detección
+    // NEW: lista editable en Inspector
+    [System.Serializable] public struct IdPrefabPair
+    {
+        public int id;
+        public GameObject prefab;
+    }
+    [Tooltip("Asignar un prefab distinto para IDs concretos")]
+    public List<IdPrefabPair> customPrefabs = new();  // ← se ve como tabla
+
     [Header("Detection Settings")]
-    [Tooltip("Tamaño físico del lado del marcador en metros (‑1 ➜ sin estimar pose)")]
-    public float markerSideMeters = 0.025f;
-    [Tooltip("Diccionario predefinido OpenCV: Dict4x4_50, Dict4x4_100 …")]
-    public Aruco.PredefinedDictionaryName dictionaryName = Aruco.PredefinedDictionaryName.Dict4x4_50;
+    public float markerSideMeters = -1f;
+    public Aruco.PredefinedDictionaryName dictionaryName =
+        Aruco.PredefinedDictionaryName.Dict4x4_50;
 
-    Aruco.Dictionary dictionary;                     // Tabla binaria de marcadores
-    Aruco.DetectorParameters detectorParams;            // Parámetros de umbrales, etc.
-    readonly Dictionary<int, ARAnchor> anchors = new();
-
-    Cv.Mat cameraMatrix;
-    Cv.Mat distCoeffs;
-
-    bool intrinsicsInit;
-
-
-
-    // ─────────────────────────────── NEW: UI debug
     [Header("Debug UI")]
-    public TMP_Text debugText;
-    public ScrollRect scrollRect;   // 👈 referencia al Scroll View
+    public TMP_Text  debugText;
+    public ScrollRect scrollRect;
     public int maxLines = 200;
 
-    readonly StringBuilder logBuffer = new();// guarda el histórico
+    // ────────────────── Internos ──────────────────
+    Aruco.Dictionary        dictionary;
+    Aruco.DetectorParameters detectorParams;
 
+    readonly Dictionary<int, Transform> markerNodes = new();
+    readonly Dictionary<int, GameObject> prefabLookup = new();   // NEW
 
+    ARAnchor rootAnchor;                   // único anchor raíz
 
-    void Start()
-    {
-        Screen.sleepTimeout = SleepTimeout.NeverSleep;
-    }
+    Cv.Mat cameraMatrix, distCoeffs;
+    bool   intrinsicsInit;
+    readonly StringBuilder logBuffer = new();
+    float  nextDebugUpdate;
 
-    void OnApplicationQuit()
-    {
-        // Restaurar el comportamiento por defecto (opcional)
-        Screen.sleepTimeout = SleepTimeout.SystemSetting;
-    }
-
-    //──────────────────────────────────────── Lifecycle
+    // ────────────────── Init ──────────────────
     void Awake()
     {
-        if (!camManager) camManager = GetComponent<ARCameraManager>();
-        if (!anchorManager) anchorManager = FindAnyObjectByType<ARAnchorManager>();
+        camManager    ??= GetComponent<ARCameraManager>();
+        anchorManager ??= FindAnyObjectByType<ARAnchorManager>();
+
+        rootAnchor = new GameObject("RootAnchor").AddComponent<ARAnchor>();
+
+        // NEW: pasa lista a diccionario en O(1)
+        foreach (var pair in customPrefabs)
+            prefabLookup[pair.id] = pair.prefab ? pair.prefab : defaultPrefab;
 
         dictionary = Aruco.GetPredefinedDictionary(dictionaryName);
-        detectorParams = new Aruco.DetectorParameters();
+        detectorParams = new Aruco.DetectorParameters
+        {
+            AdaptiveThreshWinSizeMin     = 3,
+            AdaptiveThreshWinSizeMax     = 23,
+            AdaptiveThreshWinSizeStep    = 10,
+            MinMarkerPerimeterRate       = 0.02f,
+            MaxMarkerPerimeterRate       = 4.0f,
+            PolygonalApproxAccuracyRate  = 0.05f,
+            MinCornerDistanceRate        = 0.03f,
+            MaxErroneousBitsInBorderRate = 0.5f,
+            ErrorCorrectionRate          = 0.8f,
+            CornerRefinementMethod       = Aruco.CornerRefineMethod.Subpix
+        };
 
         cameraMatrix = new Cv.Mat();
-        distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
-
-        intrinsicsInit = false;
-
-
-        Log($"Aruco dict: {dictionaryName}");
+        distCoeffs   = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
     }
 
-    void OnEnable() => camManager.frameReceived += OnFrame;
+    void OnEnable()  => camManager.frameReceived += OnFrame;
     void OnDisable() => camManager.frameReceived -= OnFrame;
 
-    //──────────────────────────────────────── Frame loop
+    // ────────────────── Frame loop ──────────────────
     void OnFrame(ARCameraFrameEventArgs _)
     {
-        // ① CPU image ---------------------------------------------------------
+        if (!camManager.TryAcquireLatestCpuImage(out var cpuImage)) return;
 
-        bool gotImage = camManager.TryAcquireLatestCpuImage(out var cpuImage);
-        Log($"cpu ok? {gotImage}");
-
-        if (!gotImage) return;
-
-
-        // Obtener intrínsecos solo una vez
-        if (!intrinsicsInit)
+        if (!intrinsicsInit && camManager.TryGetIntrinsics(out var intr))
         {
-            if (!camManager.TryGetIntrinsics(out var intr))
-            {
-                cpuImage.Dispose();
-                return;
-            }
-
-            double[] camMatrixArr =
-            {
-                intr.focalLength.x, 0, intr.principalPoint.x,
-                0, intr.focalLength.y, intr.principalPoint.y,
-                0, 0, 1
-            };
-            cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, camMatrixArr);
+            cameraMatrix = new Cv.Mat(3,3,Cv.Type.CV_64F,new double[]{
+                intr.focalLength.x,0,intr.principalPoint.x,
+                0,intr.focalLength.y,intr.principalPoint.y,
+                0,0,1});
             intrinsicsInit = true;
         }
 
-
-        var conv = new XRCpuImage.ConversionParams
-        {
-            inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
-            outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat = TextureFormat.R8,        // escala de grises
-            transformation = XRCpuImage.Transformation.MirrorX
+        var conv = new XRCpuImage.ConversionParams {
+            inputRect        = new RectInt(0,0,cpuImage.width,cpuImage.height),
+            outputDimensions = new Vector2Int(cpuImage.width,cpuImage.height),
+            outputFormat     = TextureFormat.R8,
+            transformation   = XRCpuImage.Transformation.None
         };
 
         int byteCount = cpuImage.GetConvertedDataSize(conv);
@@ -134,177 +119,99 @@ public sealed class MultiArucoTracker : MonoBehaviour
         cpuImage.Convert(conv, buffer);
         cpuImage.Dispose();
 
-        bool portrait =
-            Screen.orientation == ScreenOrientation.Portrait ||
-            Screen.orientation == ScreenOrientation.PortraitUpsideDown;
+        bool portrait = Screen.orientation is ScreenOrientation.Portrait or ScreenOrientation.PortraitUpsideDown;
+        var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x,
+                               Cv.Type.CV_8UC1, buffer.ToArray());
 
-        // ② Native → OpenCV ---------------------------------------------------
-        byte[] managed = buffer.ToArray();
-        Cv.Mat frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, managed);
         Std.VectorVectorPoint2f corners;
         Std.VectorInt ids;
-
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
-        Log($"Detected {ids.Size()} markers");
 
+        Std.VectorVec3d rvecs=null, tvecs=null;
+        if (markerSideMeters>0 && ids.Size()>0)
+            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters,
+                                            cameraMatrix, distCoeffs,
+                                            out rvecs, out tvecs);
 
-        var detectedIds = new HashSet<int>();
-        for (int i = 0; i < ids.Size(); ++i)
-        {
-            detectedIds.Add(ids.At((uint)i));
-        }
+        var detected = new HashSet<int>();
 
-
-        if (ids.Size() == 0)
-        {
-            // Destruir anclas existentes
-            foreach (var kvp in anchors)
-            {
-                var anchor = kvp.Value;
-                if (anchorManager != null && anchorManager.subsystem != null)
-                    anchorManager.RemoveAnchor(anchor);
-                else
-                    Destroy(anchor.gameObject);
-            }
-            anchors.Clear();
-            return;
-        }
-
-        Std.VectorVec3d rvecs = null;
-        Std.VectorVec3d tvecs = null;
-        if (markerSideMeters > 0)
-        {
-            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
-        }
-
-        for (int i = 0; i < ids.Size(); ++i)
+        for (int i=0;i<ids.Size();++i)
         {
             int id = ids.At((uint)i);
+            detected.Add(id);
 
+            Vector3    localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
+            Quaternion localRot = Cv2UnityRot(rvecs.At((uint)i), portrait);
 
-            Vector3 localPos = tvecs != null ? Cv2UnityPos(tvecs.At((uint)i), portrait) : Vector3.zero;
-            Quaternion localRot = rvecs != null ? Cv2UnityRot(rvecs.At((uint)i), portrait) : Quaternion.identity;
+            if (!markerNodes.TryGetValue(id, out var node) || node==null)
+            {
+                if (markerNodes.Count >= MAX_CONTENT_NODES) continue;   // cupo lleno
 
-            // después de calcular localPos y localRot…
-            if (localPos == Vector3.zero && localRot == Quaternion.identity)
-                continue;  // no crees nada si la pose es nula
+                // NEW: elige prefab según ID
+                GameObject prefab = prefabLookup.TryGetValue(id, out var custom)
+                                    ? custom
+                                    : defaultPrefab;
+
+                var go  = Instantiate(prefab);
+                go.name = $"aruco_{id}";
+                node    = go.transform;
+                node.SetParent(rootAnchor.transform, worldPositionStays:true);
+                markerNodes[id] = node;
+            }
 
             Pose worldPose = new Pose(
                 camManager.transform.TransformPoint(localPos),
                 camManager.transform.rotation * localRot);
 
-            if (!anchors.TryGetValue(id, out var anchor) || anchor == null)
-            {
-                // ─── Crear ancla ───────────────────────────────────────
-                ARAnchor newAnchor = null;
-                if (anchorManager && anchorManager.subsystem != null &&
-                    anchorManager.subsystem.TryAddAnchor(worldPose, out XRAnchor xrAnchor))
-                {
-                    newAnchor = anchorManager.GetAnchor(xrAnchor.trackableId);
-                }
-
-                if (!newAnchor)
-                {
-                    var go = new GameObject($"aruco_{id}");
-                    go.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
-                    newAnchor = go.AddComponent<ARAnchor>();
-                }
-
-                anchors[id] = newAnchor;
-                Instantiate(contentPrefab, newAnchor.transform, false);
-            }
-            else
-            {
-                anchor.transform.SetPositionAndRotation(worldPose.position, worldPose.rotation);
-            }
+            node.SetPositionAndRotation(worldPose.position, worldPose.rotation);
         }
-        
 
-        // **Eliminar anclas perdidas**:
-        //    busca en anchors.Keys los IDs que ya NO están en detectedIds
-        var toRemove = anchors.Keys.Where(oldId => !detectedIds.Contains(oldId)).ToList();
-        foreach (var oldId in toRemove)
+        // remove lost
+        foreach (var kv in markerNodes.Where(k=>!detected.Contains(k.Key)).ToList())
         {
-            ARAnchor anchor = anchors[oldId];
-
-            // Si usas ARAnchorManager:
-            if (anchorManager != null && anchorManager.subsystem != null)
-                anchorManager.RemoveAnchor(anchor);
-            else
-                Destroy(anchor.gameObject);
-
-            anchors.Remove(oldId);
+            Destroy(kv.Value.gameObject);
+            markerNodes.Remove(kv.Key);
         }
 
+        if (ShouldUpdateDebugUI())
+            Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size()>20?"…":"")}");
     }
 
-    // ---------- Funciones a completar ----------
-    static Vector3 Cv2UnityPos(Cv.Vec3d t, bool portrait)
+    // ───────── conversion helpers ─────────
+    static Vector3 Cv2UnityPos(Cv.Vec3d t,bool portrait)
     {
-        double x = t.Get(0);
-        double y = t.Get(1);
-        double z = t.Get(2);
-
-        if (portrait)
-        {
-            double tmp = x;
-            x = y;
-            y = tmp;
-        }
-
-        return new Vector3((float)x, -(float)y, (float)z);
+        double x=t.Get(0), y=t.Get(1), z=t.Get(2);
+        if (portrait){ (x,y)=(y,x); }
+        x=-x; y=-y;
+        return new((float)x,(float)y,(float)z);
     }
-
-    static Quaternion Cv2UnityRot(Cv.Vec3d r, bool portrait)
+    static Quaternion Cv2UnityRot(Cv.Vec3d r,bool portrait)
     {
-        double x = r.Get(0);
-        double y = r.Get(1);
-        double z = r.Get(2);
-
-        if (portrait)
-        {
-            double tmp = x;
-            x = y;
-            y = tmp;
-        }
-
-        y = -y;
-
-        double angleRad = System.Math.Sqrt(x * x + y * y + z * z);
-        if (angleRad < 1e-12)
-            return Quaternion.identity;
-
-        Vector3 axis = new Vector3((float)(x / angleRad), (float)(y / angleRad), (float)(z / angleRad));
-        float angleDeg = (float)(angleRad * Mathf.Rad2Deg);
-        return Quaternion.AngleAxis(angleDeg, axis);
+        double x=r.Get(0), y=r.Get(1), z=r.Get(2);
+        if (portrait){ (x,y)=(y,x); }
+        x=-x; y=-y; z=-z;
+        double ang=Mathf.Sqrt((float)(x*x+y*y+z*z));
+        if (ang<1e-12) return Quaternion.identity;
+        Vector3 axis=new((float)(x/ang),(float)(y/ang),(float)(z/ang));
+        return Quaternion.AngleAxis((float)(ang*Mathf.Rad2Deg), axis);
     }
 
-
-    // ─────────────────────────────── helpers ───────────────────────────────
+    // ───────── debug helpers ─────────
+    bool ShouldUpdateDebugUI()
+    {
+        if (!debugText) return false;
+        if (Time.unscaledTime < nextDebugUpdate) return false;
+        nextDebugUpdate = Time.unscaledTime + 1f/DEBUG_FPS;
+        return true;
+    }
     void Log(string msg)
     {
-        Debug.Log(msg);
-
-        if (!debugText) return;
-
         logBuffer.AppendLine(msg);
-
-        // recorta si excede el límite
-        int excess = logBuffer.ToString().Split('\n').Length - maxLines;
-        if (excess > 0)
-        {
-            // descarta las primeras 'excess' líneas
-            string[] lines = logBuffer.ToString().Split('\n');
-            logBuffer.Clear();
-            for (int i = excess; i < lines.Length; i++)
-                logBuffer.AppendLine(lines[i]);
-        }
-
+        var lines = logBuffer.ToString().Split('\n');
+        int extra = lines.Length - maxLines;
+        if (extra>0) { logBuffer.Clear(); for(int i=extra;i<lines.Length;i++) logBuffer.AppendLine(lines[i]); }
         debugText.text = logBuffer.ToString();
-
-        // ─── fuerza actualización de layout y baja el scroll ───
         Canvas.ForceUpdateCanvases();
-        if (scrollRect)
-            scrollRect.verticalNormalizedPosition = 0f; // 0 = abajo
+        if (scrollRect) scrollRect.verticalNormalizedPosition=0f;
     }
 }

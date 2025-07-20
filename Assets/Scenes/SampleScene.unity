@@ -132,6 +132,16 @@ PrefabInstance:
       propertyPath: m_Enabled
       value: 0
       objectReference: {fileID: 0}
+    - target: {fileID: 2512387469002778331, guid: 48cb3fb68c91eb94999fd99957eb0cae,
+        type: 3}
+      propertyPath: field of view
+      value: 174
+      objectReference: {fileID: 0}
+    - target: {fileID: 2512387469002778331, guid: 48cb3fb68c91eb94999fd99957eb0cae,
+        type: 3}
+      propertyPath: near clip plane
+      value: 0.01
+      objectReference: {fileID: 0}
     - target: {fileID: 2512387470319625105, guid: 48cb3fb68c91eb94999fd99957eb0cae,
         type: 3}
       propertyPath: m_OccludeARHitsWith2DObjects
@@ -483,7 +493,7 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 1632666595}
   m_HandleRect: {fileID: 1632666594}
   m_Direction: 2
-  m_Value: 0
+  m_Value: 1
   m_Size: 1
   m_NumberOfSteps: 0
   m_OnValueChanged:
@@ -906,7 +916,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -91.50058, y: 99.99999}
+  m_AnchoredPosition: {x: -91.50058, y: 99.999985}
   m_SizeDelta: {x: 0, y: 1}
   m_Pivot: {x: 0, y: 1}
 --- !u!1 &1453796234
@@ -994,9 +1004,13 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   camManager: {fileID: 1324098903}
   anchorManager: {fileID: 331264289}
-  contentPrefab: {fileID: 3228870936901962627, guid: 8a219c35b97545846952249f6a020040,
+  defaultPrefab: {fileID: 3228870936901962627, guid: 8a219c35b97545846952249f6a020040,
     type: 3}
-  markerSideMeters: 0.025
+  customPrefabs:
+  - id: 6
+    prefab: {fileID: 3228870936901962627, guid: 86d26157d0ddf58409864ab8517a142e,
+      type: 3}
+  markerSideMeters: 0.08
   dictionaryName: 0
   debugText: {fileID: 876535436}
   scrollRect: {fileID: 846923885}
