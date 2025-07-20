@@ -21,7 +21,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
     // ────────────────── Inspector ──────────────────
     [Header("Managers")]
     [SerializeField] ARCameraManager camManager;
-    [SerializeField] ARAnchorManager anchorManager;
+
 
     [Header("Prefabs")]
     public GameObject defaultPrefab;                // antes: contentPrefab
@@ -63,7 +63,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
     void Awake()
     {
         camManager    ??= GetComponent<ARCameraManager>();
-        anchorManager ??= FindAnyObjectByType<ARAnchorManager>();
+
 
         rootAnchor = new GameObject("RootAnchor").AddComponent<ARAnchor>();
 
@@ -159,11 +159,14 @@ public sealed class MultiArucoTracker : MonoBehaviour
                 markerNodes[id] = node;
             }
 
-            Pose worldPose = new Pose(
-                camManager.transform.TransformPoint(localPos),
-                camManager.transform.rotation * localRot);
+            Vector3 worldPos = camManager.transform.TransformPoint(localPos);
+            Quaternion worldRot = camManager.transform.rotation * localRot;
 
-            node.SetPositionAndRotation(worldPose.position, worldPose.rotation);
+            Vector3 localPosToRoot = rootAnchor.transform.InverseTransformPoint(worldPos);
+            Quaternion localRotToRoot = Quaternion.Inverse(rootAnchor.transform.rotation) * worldRot;
+
+            node.localPosition = localPosToRoot;
+            node.localRotation = localRotToRoot;
         }
 
         // remove lost
