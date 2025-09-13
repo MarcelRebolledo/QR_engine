@@ -58,8 +58,21 @@ public sealed class MultiArucoTracker : MonoBehaviour
     bool   intrinsicsInit;
     readonly StringBuilder logBuffer = new();
     float  nextDebugUpdate;
+    bool warnedNoSize, warnedNoPrefab;
 
     // ────────────────── Init ──────────────────
+
+     void Start()
+    {
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
+    }
+
+    void OnApplicationQuit()
+    {
+        // Restaurar el comportamiento por defecto (opcional)
+        Screen.sleepTimeout = SleepTimeout.SystemSetting;
+    }
+    
     void Awake()
     {
         camManager    ??= GetComponent<ARCameraManager>();
@@ -93,23 +106,40 @@ public sealed class MultiArucoTracker : MonoBehaviour
     void OnEnable()  => camManager.frameReceived += OnFrame;
     void OnDisable() => camManager.frameReceived -= OnFrame;
 
-    // ────────────────── Frame loop ──────────────────
-    void OnFrame(ARCameraFrameEventArgs _)
+    void OnValidate()
     {
-        if (!camManager.TryAcquireLatestCpuImage(out var cpuImage)) return;
+    #if UNITY_EDITOR
+        if (markerSideMeters <= 0f)
+            Debug.LogWarning("[MultiArucoTracker] Marker Side Meters debe ser > 0 para estimar pose.");
+        if (!defaultPrefab && (customPrefabs == null || customPrefabs.Count == 0))
+            Debug.LogWarning("[MultiArucoTracker] Asigna Default Prefab o al menos un Custom Prefab.");
+    #endif
+    }
+
+    void WarnOnce(ref bool flag, string msg)
+    {
+        if (!flag) { Debug.LogWarning(msg); flag = true; }
+    }
+
+    // ────────────────── Frame loop ──────────────────
+    void OnFrame(ARCameraFrameEventArgs _){
+
+        if (!camManager || !camManager.TryAcquireLatestCpuImage(out var cpuImage))
+            return;
 
         if (!intrinsicsInit && camManager.TryGetIntrinsics(out var intr))
         {
-            cameraMatrix = new Cv.Mat(3,3,Cv.Type.CV_64F,new double[]{
-                intr.focalLength.x,0,intr.principalPoint.x,
-                0,intr.focalLength.y,intr.principalPoint.y,
-                0,0,1});
+            cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, new double[] {
+                intr.focalLength.x, 0, intr.principalPoint.x,
+                0, intr.focalLength.y, intr.principalPoint.y,
+                0, 0, 1 });
             intrinsicsInit = true;
         }
 
-        var conv = new XRCpuImage.ConversionParams {
-            inputRect        = new RectInt(0,0,cpuImage.width,cpuImage.height),
-            outputDimensions = new Vector2Int(cpuImage.width,cpuImage.height),
+        var conv = new XRCpuImage.ConversionParams
+        {
+            inputRect        = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+            outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
             outputFormat     = TextureFormat.R8,
             transformation   = XRCpuImage.Transformation.None
         };
@@ -120,64 +150,94 @@ public sealed class MultiArucoTracker : MonoBehaviour
         cpuImage.Dispose();
 
         bool portrait = Screen.orientation is ScreenOrientation.Portrait or ScreenOrientation.PortraitUpsideDown;
-        var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x,
-                               Cv.Type.CV_8UC1, buffer.ToArray());
+        var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, buffer.ToArray());
 
         Std.VectorVectorPoint2f corners;
         Std.VectorInt ids;
         Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
 
-        Std.VectorVec3d rvecs=null, tvecs=null;
-        if (markerSideMeters>0 && ids.Size()>0)
-            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters,
-                                            cameraMatrix, distCoeffs,
-                                            out rvecs, out tvecs);
+        // Nada detectado → limpia perdidos y debug opcional
+        if (ids.Size() == 0)
+        {
+            // elimina todo lo que estaba y ya no está
+            if (markerNodes.Count > 0)
+            {
+                foreach (var kv in markerNodes.ToList())
+                {
+                    Destroy(kv.Value.gameObject);
+                    markerNodes.Remove(kv.Key);
+                }
+            }
+            if (ShouldUpdateDebugUI()) Log("Markers: 0");
+            return;
+        }
+
+        // Sin tamaño válido → no podemos estimar pose de ArUco
+        if (markerSideMeters <= 0f)
+        {
+            WarnOnce(ref warnedNoSize, "[MultiArucoTracker] Estimación de pose deshabilitada: asigna Marker Side Meters > 0 (por ej. 0.025f para 25 mm).");
+            if (ShouldUpdateDebugUI())
+                Log($"Markers: {ids.Size()} (sin pose; MarkerSideMeters<=0)");
+            return;
+        }
+
+        Std.VectorVec3d rvecs = null, tvecs = null;
+        Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
+
+        // Seguridad extra
+        if (rvecs == null || tvecs == null || rvecs.Size() != ids.Size() || tvecs.Size() != ids.Size())
+        {
+            if (ShouldUpdateDebugUI())
+                Log("Detectados sin rvecs/tvecs válidos");
+            return;
+        }
 
         var detected = new HashSet<int>();
 
-        for (int i=0;i<ids.Size();++i)
+        for (int i = 0; i < ids.Size(); ++i)
         {
             int id = ids.At((uint)i);
             detected.Add(id);
 
+            // Selección de prefab
+            GameObject prefab = prefabLookup.TryGetValue(id, out var custom) ? custom : defaultPrefab;
+            if (!prefab)
+            {
+                WarnOnce(ref warnedNoPrefab, $"[MultiArucoTracker] No hay prefab asignado (ID {id}). Asigna Default Prefab o uno en Custom Prefabs.");
+                continue;
+            }
+
             Vector3    localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
             Quaternion localRot = Cv2UnityRot(rvecs.At((uint)i), portrait);
 
-            if (!markerNodes.TryGetValue(id, out var node) || node==null)
+            if (!markerNodes.TryGetValue(id, out var node) || !node)
             {
-                if (markerNodes.Count >= MAX_CONTENT_NODES) continue;   // cupo lleno
+                if (markerNodes.Count >= MAX_CONTENT_NODES) continue;
 
-                // NEW: elige prefab según ID
-                GameObject prefab = prefabLookup.TryGetValue(id, out var custom)
-                                    ? custom
-                                    : defaultPrefab;
-
-                var go  = Instantiate(prefab);
+                var go = Instantiate(prefab);
                 go.name = $"aruco_{id}";
-                node    = go.transform;
-                node.SetParent(rootAnchor.transform, worldPositionStays:true);
+                node = go.transform;
+                node.SetParent(rootAnchor.transform, worldPositionStays: true);
                 markerNodes[id] = node;
             }
 
+            // AR pose → mundo → raíz
             Vector3 worldPos = camManager.transform.TransformPoint(localPos);
             Quaternion worldRot = camManager.transform.rotation * localRot;
 
-            Vector3 localPosToRoot = rootAnchor.transform.InverseTransformPoint(worldPos);
-            Quaternion localRotToRoot = Quaternion.Inverse(rootAnchor.transform.rotation) * worldRot;
-
-            node.localPosition = localPosToRoot;
-            node.localRotation = localRotToRoot;
+            node.localPosition = rootAnchor.transform.InverseTransformPoint(worldPos);
+            node.localRotation = Quaternion.Inverse(rootAnchor.transform.rotation) * worldRot;
         }
 
-        // remove lost
-        foreach (var kv in markerNodes.Where(k=>!detected.Contains(k.Key)).ToList())
+        // eliminar perdidos
+        foreach (var kv in markerNodes.Where(k => !detected.Contains(k.Key)).ToList())
         {
             Destroy(kv.Value.gameObject);
             markerNodes.Remove(kv.Key);
         }
 
         if (ShouldUpdateDebugUI())
-            Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size()>20?"…":"")}");
+            Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size() > 20 ? "…" : "")}");
     }
 
     // ───────── conversion helpers ─────────

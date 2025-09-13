@@ -916,7 +916,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: -91.50058, y: 99.999985}
+  m_AnchoredPosition: {x: -91.50058, y: 99.99998}
   m_SizeDelta: {x: 0, y: 1}
   m_Pivot: {x: 0, y: 1}
 --- !u!1 &1453796234
@@ -964,10 +964,10 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 1498714273}
-  - component: {fileID: 1498714274}
   - component: {fileID: 1498714277}
   - component: {fileID: 1498714276}
   - component: {fileID: 1498714275}
+  - component: {fileID: 1498714278}
   m_Layer: 0
   m_Name: ArucoManager
   m_TagString: Untagged
@@ -990,33 +990,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &1498714274
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1498714272}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: d3521b0a5f2e58d4a805b06fadf417f0, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  camManager: {fileID: 1324098903}
-  defaultPrefab: {fileID: 3228870936901962627, guid: 8a219c35b97545846952249f6a020040,
-    type: 3}
-  customPrefabs:
-  - id: 6
-    prefab: {fileID: 3228870936901962627, guid: 86d26157d0ddf58409864ab8517a142e,
-      type: 3}
-  markerSideMeters: 0.08
-  dictionaryName: 0
-  debugText: {fileID: 876535436}
-  scrollRect: {fileID: 846923885}
-  maxLines: 25
-  calibrationBoardPrefab: {fileID: 3228870936901962627, guid: 18d468b113c8cbf4884e409df89f994d,
-    type: 3}
-  boardUpdateThreshold: 0.02
 --- !u!114 &1498714275
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1131,6 +1104,27 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
+--- !u!114 &1498714278
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1498714272}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d3521b0a5f2e58d4a805b06fadf417f0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  camManager: {fileID: 1324098903}
+  defaultPrefab: {fileID: 3228870936901962627, guid: 8a219c35b97545846952249f6a020040,
+    type: 3}
+  customPrefabs: []
+  markerSideMeters: 0.025
+  dictionaryName: 0
+  debugText: {fileID: 876535436}
+  scrollRect: {fileID: 846923885}
+  maxLines: 10
 --- !u!1 &1632666593
 GameObject:
   m_ObjectHideFlags: 0
