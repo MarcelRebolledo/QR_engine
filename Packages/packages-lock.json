@@ -1,5 +1,16 @@
 {
   "dependencies": {
+    "com.google.ar.core.arfoundation.extensions": {
+      "version": "https://github.com/google-ar/arcore-unity-extensions.git#arf6",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {
+        "com.unity.xr.arfoundation": "4.1.5",
+        "com.unity.xr.arcore": "4.1.5",
+        "com.unity.xr.arkit": "4.1.5"
+      },
+      "hash": "9b380b8c717be28c0b3f7c1cf9513a0197775f42"
+    },
     "com.unity.burst": {
       "version": "1.8.23",
       "depth": 2,
@@ -74,7 +85,7 @@
       "url": "https://packages.unity.com"
     },
     "com.unity.inputsystem": {
-      "version": "1.14.1",
+      "version": "1.14.2",
       "depth": 0,
       "source": "registry",
       "dependencies": {
