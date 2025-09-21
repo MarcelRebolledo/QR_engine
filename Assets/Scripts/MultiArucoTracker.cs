@@ -12,7 +12,7 @@ using System.Text;
 using UnityEngine.UI;
 using System.Linq;
 
-[RequireComponent(typeof(ARCameraManager))]
+
 public sealed class MultiArucoTracker : MonoBehaviour
 {
     const int   MAX_CONTENT_NODES = 15; // ⟵ máximo de prefabs simultáneos
@@ -42,9 +42,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
     [Header("Debug UI")]
     public TMP_Text  debugText;
-    public ScrollRect scrollRect;
-    public int maxLines = 200;
 
+   
     // ────────────────── Internos ──────────────────
     Aruco.Dictionary        dictionary;
     Aruco.DetectorParameters detectorParams;
@@ -168,7 +167,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
                     markerNodes.Remove(kv.Key);
                 }
             }
-            if (ShouldUpdateDebugUI()) Log("Markers: 0");
+            
             return;
         }
 
@@ -176,8 +175,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
         if (markerSideMeters <= 0f)
         {
             WarnOnce(ref warnedNoSize, "[MultiArucoTracker] Estimación de pose deshabilitada: asigna Marker Side Meters > 0 (por ej. 0.025f para 25 mm).");
-            if (ShouldUpdateDebugUI())
-                Log($"Markers: {ids.Size()} (sin pose; MarkerSideMeters<=0)");
+            Log($"Markers: {ids.Size()} (sin pose; MarkerSideMeters<=0)");
             return;
         }
 
@@ -187,8 +185,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
         // Seguridad extra
         if (rvecs == null || tvecs == null || rvecs.Size() != ids.Size() || tvecs.Size() != ids.Size())
         {
-            if (ShouldUpdateDebugUI())
-                Log("Detectados sin rvecs/tvecs válidos");
+            Log("Detectados sin rvecs/tvecs válidos");
             return;
         }
 
@@ -236,7 +233,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
             markerNodes.Remove(kv.Key);
         }
 
-        if (ShouldUpdateDebugUI())
+        
             Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size() > 20 ? "…" : "")}");
     }
 
@@ -260,21 +257,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
     }
 
     // ───────── debug helpers ─────────
-    bool ShouldUpdateDebugUI()
-    {
-        if (!debugText) return false;
-        if (Time.unscaledTime < nextDebugUpdate) return false;
-        nextDebugUpdate = Time.unscaledTime + 1f/DEBUG_FPS;
-        return true;
-    }
-    void Log(string msg)
-    {
-        logBuffer.AppendLine(msg);
-        var lines = logBuffer.ToString().Split('\n');
-        int extra = lines.Length - maxLines;
-        if (extra>0) { logBuffer.Clear(); for(int i=extra;i<lines.Length;i++) logBuffer.AppendLine(lines[i]); }
-        debugText.text = logBuffer.ToString();
-        Canvas.ForceUpdateCanvases();
-        if (scrollRect) scrollRect.verticalNormalizedPosition=0f;
-    }
+
+    void Log(string m) { Debug.Log(m); if (debugText) debugText.text = m; }
 }

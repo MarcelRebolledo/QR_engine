@@ -1,31 +1,27 @@
 using UnityEngine;
+using UnityEngine.UI; // para Canvas.ForceUpdateCanvases
 
-namespace App.UI
+public class UIFlowManager : MonoBehaviour
 {
-  public class UIFlowManager : MonoBehaviour
+  [SerializeField] GameObject panelMainMenu;
+  [SerializeField] GameObject panelPlacement;
+  [SerializeField] GameObject panelVisualization;
+
+  void Awake() => ShowOnly(panelMainMenu);
+
+  public void GoToMainMenu()      => ShowOnly(panelMainMenu);
+  public void GoToPlacement()     => ShowOnly(panelPlacement);
+  public void GoToVisualization() => ShowOnly(panelVisualization);
+
+  void ShowOnly(GameObject target)
   {
-    [Header("Panels")]
-    [SerializeField] private UIPanel mainMenuPanel;
-    [SerializeField] private UIPanel anchorPlacementPanel;
-    [SerializeField] private UIPanel visualizationPanel;
+    if (panelMainMenu)    panelMainMenu.SetActive(false);
+    if (panelPlacement)   panelPlacement.SetActive(false);
+    if (panelVisualization) panelVisualization.SetActive(false);
 
-    private UIPanel _current;
+    if (target) target.SetActive(true);
 
-    void Awake()
-    {
-      // Arranca en el menú principal
-      GoToMainMenu();
-    }
-
-    public void GoToMainMenu()        => SwitchTo(mainMenuPanel);
-    public void GoToPlacement()       => SwitchTo(anchorPlacementPanel);
-    public void GoToVisualization()   => SwitchTo(visualizationPanel);
-
-    private void SwitchTo(UIPanel panel)
-    {
-      if (_current != null) _current.Hide();
-      _current = panel;
-      if (_current != null) _current.Show();
-    }
+    Canvas.ForceUpdateCanvases(); // fuerza redibujado inmediato
+    Debug.Log($"[UIFlow] States => Main:{panelMainMenu?.activeSelf} | Placement:{panelPlacement?.activeSelf} | Viz:{panelVisualization?.activeSelf}");
   }
 }

@@ -210,5 +210,5 @@ MonoBehaviour:
   MapQualityBarPrefab: {fileID: 1364549571868350, guid: 9575e5b499c31483fa79b3754a2eb6ac,
     type: 3}
   CircleRenderer: {fileID: 114730705288382006}
-  Range: 150
+  Range: 100
   Radius: 0.16
