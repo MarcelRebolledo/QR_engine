@@ -40,7 +40,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
     public List<IdPrefabPair> customPrefabs = new();  // ← se ve como tabla
 
     [Header("Detection Settings")]
-    public float markerSideMeters = -1f;
+    public float markerSideMeters = 0.025f;
+    [SerializeField, Range(0.001f, 0.01f)]
+    float stepSize = 0.01f;
     public Aruco.PredefinedDictionaryName dictionaryName =
         Aruco.PredefinedDictionaryName.Dict4x4_50;
 
@@ -66,7 +68,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
     // ────────────────── espacio ar ──────────────────
     [Header("ARF Integration")]
     [SerializeField] Transform trackablesParent;
-    [SerializeField] XROrigin xrOrigin; 
+    [SerializeField] XROrigin xrOrigin;
 
     // ────────────────── Init ──────────────────
 
@@ -84,9 +86,9 @@ public sealed class MultiArucoTracker : MonoBehaviour
     void Awake()
     {
         camManager ??= GetComponent<ARCameraManager>();
-          // 1) Encuentra XROrigin y toma su TrackablesParent (AR Foundation 6.x)
+        // 1) Encuentra XROrigin y toma su TrackablesParent (AR Foundation 6.x)
         if (xrOrigin == null)
-        xrOrigin = FindAnyObjectByType<XROrigin>();
+            xrOrigin = FindAnyObjectByType<XROrigin>();
         if (trackablesParent == null && xrOrigin != null)
             trackablesParent = xrOrigin.TrackablesParent;
 
@@ -114,20 +116,20 @@ public sealed class MultiArucoTracker : MonoBehaviour
         dictionary = Aruco.GetPredefinedDictionary(dictionaryName);
         detectorParams = new Aruco.DetectorParameters
         {
-            AdaptiveThreshWinSizeMin     = 3,
-            AdaptiveThreshWinSizeMax     = 23,
-            AdaptiveThreshWinSizeStep    = 10,
-            MinMarkerPerimeterRate       = 0.02f,
-            MaxMarkerPerimeterRate       = 4.0f,
-            PolygonalApproxAccuracyRate  = 0.05f,
-            MinCornerDistanceRate        = 0.03f,
+            AdaptiveThreshWinSizeMin = 3,
+            AdaptiveThreshWinSizeMax = 23,
+            AdaptiveThreshWinSizeStep = 10,
+            MinMarkerPerimeterRate = 0.02f,
+            MaxMarkerPerimeterRate = 4.0f,
+            PolygonalApproxAccuracyRate = 0.05f,
+            MinCornerDistanceRate = 0.03f,
             MaxErroneousBitsInBorderRate = 0.5f,
-            ErrorCorrectionRate          = 0.8f,
-            CornerRefinementMethod       = Aruco.CornerRefineMethod.Subpix
+            ErrorCorrectionRate = 0.8f,
+            CornerRefinementMethod = Aruco.CornerRefineMethod.Subpix
         };
 
         cameraMatrix = new Cv.Mat();
-        distCoeffs   = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
+        distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
     }
 
     void OnEnable() => camManager.frameReceived += OnFrame;
@@ -288,7 +290,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
     // ───────── debug helpers ─────────
 
     void Log(string m) { Debug.Log(m); if (debugText) debugText.text = m; }
-    
+
     public bool TryGetMarkerPose(int id, out Vector3 worldPos, out Quaternion worldRot)
     {
         if (markerNodes.TryGetValue(id, out var node) && node)
@@ -300,5 +302,18 @@ public sealed class MultiArucoTracker : MonoBehaviour
         worldPos = default;
         worldRot = default;
         return false;
+    }
+    
+
+    public void IncreaseMarkerSize()
+    {
+        markerSideMeters = Mathf.Clamp(markerSideMeters + stepSize, 0.01f, 1f);
+        Log($"Marker size → {markerSideMeters:F3} m");
+    }
+
+    public void DecreaseMarkerSize()
+    {
+        markerSideMeters = Mathf.Clamp(markerSideMeters - stepSize, 0.01f, 1f);
+        Log($"Marker size → {markerSideMeters:F3} m");
     }
 }

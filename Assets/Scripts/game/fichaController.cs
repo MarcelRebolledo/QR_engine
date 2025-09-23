@@ -3,7 +3,7 @@ using TMPro;
 
 public class fichaController : MonoBehaviour
 {
-    const int   kRequiredId    = 6;
+    const int   kRequiredId    = 7;
     const float kRayDistance   = 10f;
     const float kSurfaceOffset = 0.015f; // separación para evitar z-fighting
     const int   kIgnoreRaycastLayer = 2; // capa especial de Unity: "Ignore Raycast"
@@ -32,6 +32,23 @@ public class fichaController : MonoBehaviour
 
     GameObject _spawned;
     bool       _placedOnce;
+
+
+    [Tooltip("Ignora micro-movimientos por debajo de este valor (m).")]
+    [SerializeField, Range(0.001f, 0.05f)]
+    float deadZoneMeters = 0.005f;  
+
+    [Tooltip("Tiempo característico de suavizado (menor = más rápido).")]
+    [SerializeField, Range(0.01f, 1f)]
+    float smoothTime = 0.12f; 
+
+
+    
+    [Tooltip("Velocidad máx. que puede alcanzar el suavizado (m/s).")]
+    [SerializeField, Range(0.1f, 20f)]
+    float maxFollowSpeed = 5f;   
+
+    Vector3 _followVel = Vector3.zero;
 
     void Update()
     {
@@ -84,19 +101,33 @@ public class fichaController : MonoBehaviour
             // MUY IMPORTANTE: tu PJ no debe interferir con el raycast
             SetLayerRecursive(_spawned, kIgnoreRaycastLayer); // lo saca de los Physics.Raycast por defecto
 
-            Log($"spawn en {targetPos}  |  hit={hit.collider.name}  layer={LayerMask.LayerToName(hit.collider.gameObject.layer)}");
+            //Log($"spawn en {targetPos}  |  hit={hit.collider.name}  layer={LayerMask.LayerToName(hit.collider.gameObject.layer)}");
             _placedOnce = true;
         }
         else
-        {
-            // Si se quiere seguimiento continuo, actualiza posición
+        {            
             if (followContinuously)
-            {
-                _spawned.transform.position = targetPos;
-                // Rotación opcional para alinear con el plano:
-                // _spawned.transform.rotation = Quaternion.LookRotation(Vector3.ProjectOnPlane(_spawned.transform.forward, hit.normal), hit.normal);
-                Log($"move → {targetPos}  |  hit={hit.collider.name}");
-            }
+                {
+                    Vector3 curr = _spawned.transform.position;
+                    float dist = Vector3.Distance(curr, targetPos);
+
+                    // 1) Dead zone: ignora micro variaciones
+                    if (dist <= deadZoneMeters)
+                    {
+                        _followVel = Vector3.zero;
+                    }  
+                    else
+                    {
+                        _spawned.transform.position = Vector3.SmoothDamp(
+                            curr,
+                            targetPos,
+                            ref _followVel,
+                            smoothTime,         // cuanto menor, más rápido llega
+                            maxFollowSpeed,     // límite de velocidad
+                            Time.deltaTime
+                        );
+                    }                    
+                }
         }
     }
 
