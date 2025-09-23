@@ -68,7 +68,7 @@ public class AnchorSceneController : MonoBehaviour
   {
 
     Screen.sleepTimeout = SleepTimeout.NeverSleep;
-    
+
     if (lan != null)
     {
       lan.OnAnchorShared += OnAnchorShared;
@@ -85,7 +85,7 @@ public class AnchorSceneController : MonoBehaviour
   }
 
   public void BtnIniciar()
-  {    
+  {
     TogglePlanes(false);
     TogglePointCloud(false);
     if (_resolveLoop != null) StopCoroutine(_resolveLoop);
@@ -111,18 +111,6 @@ public class AnchorSceneController : MonoBehaviour
     Log("Captura iniciada: camina alrededor para mapear. (warm-up)");
   }
 
-  // 2) Terminar e intentar hostear: hace 1 chequeo y dispara el host si pasa
-  public void BtnFinishAndHost()
-  {
-    if (!_mappingActive)
-    { Log("Inicia la captura antes de intentar guardar."); return; }
-
-    // congelamos evaluación continua
-    _mappingActive = false;
-
-    // intenta hostear una sola vez con el estado actual
-    TryHostNow();
-  }
 
   // ---------- FLUJO DE PLACEMENT (sin iniciar captura) ----------
   IEnumerator PlaceAnchorOnly()
@@ -170,7 +158,7 @@ public class AnchorSceneController : MonoBehaviour
   void UpdateMappingFeedback()
   {
     if (ARSession.state != ARSessionState.SessionTracking)
-        { Log($"No tracking ({ARSession.notTrackingReason})."); if (botonguardar) botonguardar.SetActive(false); return; }
+    { Log($"No tracking ({ARSession.notTrackingReason})."); if (botonguardar) botonguardar.SetActive(false); return; }
 
     var tAnchor = GetActiveAnchorTransform();
     if (tAnchor == null)
@@ -185,9 +173,13 @@ public class AnchorSceneController : MonoBehaviour
 
     string why;
     bool canSave = IsQualityAcceptable(out why);
-    if (botonguardar) botonguardar.SetActive(canSave);
+    if (canSave)
+    {
+      _mappingActive = false;
+      TryHostNow();
+    }
 
-     if (logVerbose)
+    if (logVerbose)
       Log($"Mapping quality: {anchorManager.EstimateFeatureMapQualityForHosting(new Pose(arCamera.transform.position, arCamera.transform.rotation))} | saveReady={canSave} ({why})");
 
   }
@@ -196,10 +188,10 @@ public class AnchorSceneController : MonoBehaviour
   void TryHostNow()
   {
     if (_localAnchor == null || _hostPromise != null || !string.IsNullOrEmpty(_cloudId))
-    { Log("Nada que guardar (¿ya guardado o sin anchor local?)."); return; }
+    { return; }
 
     if (ARSession.state != ARSessionState.SessionTracking)
-    { Log($"No tracking ({ARSession.notTrackingReason})."); return; }
+    { return; }
 
     // Evalúa las mismas reglas del sample
     Pose camPose = new Pose(arCamera.transform.position, arCamera.transform.rotation);
@@ -209,11 +201,11 @@ public class AnchorSceneController : MonoBehaviour
     float dist = Vector3.Distance(refPos, arCamera.transform.position);
 
     if (_qualityIndicator && dist < _qualityIndicator.Radius * kMinDistFactor)
-    { Log("Muy cerca: aléjate un poco."); return; }
+    { return; }
     if (dist > kMaxDistMeters)
-    { Log("Muy lejos: acércate."); return; }
+    { return; }
     if (_qualityIndicator && _qualityIndicator.ReachTopviewAngle)
-    { Log("Evita vista superior; rodea desde varios lados."); return; }
+    { return; }
 
     bool ok = (q >= minQualityToHost);
     if (requireIndicatorCoverage && _qualityIndicator)
@@ -221,7 +213,6 @@ public class AnchorSceneController : MonoBehaviour
 
     if (!ok)
     {
-      Log($"Calidad insuficiente ({q}). Mejora el mapeo y reintenta.");
       return;
     }
 
@@ -233,35 +224,35 @@ public class AnchorSceneController : MonoBehaviour
 
   bool IsQualityAcceptable(out string reason)
   {
-      reason = "";
+    reason = "";
 
-      if (ARSession.state != ARSessionState.SessionTracking)
-      { reason = $"No tracking ({ARSession.notTrackingReason})"; return false; }
+    if (ARSession.state != ARSessionState.SessionTracking)
+    { reason = $"No tracking ({ARSession.notTrackingReason})"; return false; }
 
-      var tAnchor = GetActiveAnchorTransform();
-      if (tAnchor == null)
-      { reason = "No hay anchor activo."; return false; }
+    var tAnchor = GetActiveAnchorTransform();
+    if (tAnchor == null)
+    { reason = "No hay anchor activo."; return false; }
 
-      Pose camPose = new Pose(arCamera.transform.position, arCamera.transform.rotation);
-      FeatureMapQuality q = anchorManager.EstimateFeatureMapQualityForHosting(camPose);
+    Pose camPose = new Pose(arCamera.transform.position, arCamera.transform.rotation);
+    FeatureMapQuality q = anchorManager.EstimateFeatureMapQualityForHosting(camPose);
 
-      // distancia / top-view (mismas reglas del sample)
-      Vector3 refPos = (_qualityIndicator ? _qualityIndicator.transform.position : tAnchor.position);
-      float dist = Vector3.Distance(refPos, arCamera.transform.position);
-      if (_qualityIndicator && dist < _qualityIndicator.Radius * kMinDistFactor)
-      { reason = "Muy cerca: aléjate un poco."; return false; }
-      if (dist > kMaxDistMeters)
-      { reason = "Muy lejos: acércate."; return false; }
-      if (_qualityIndicator && _qualityIndicator.ReachTopviewAngle)
-      { reason = "Evita vista superior; rodea desde varios lados."; return false; }
+    // distancia / top-view (mismas reglas del sample)
+    Vector3 refPos = (_qualityIndicator ? _qualityIndicator.transform.position : tAnchor.position);
+    float dist = Vector3.Distance(refPos, arCamera.transform.position);
+    if (_qualityIndicator && dist < _qualityIndicator.Radius * kMinDistFactor)
+    { reason = "Muy cerca: aléjate un poco."; return false; }
+    if (dist > kMaxDistMeters)
+    { reason = "Muy lejos: acércate."; return false; }
+    if (_qualityIndicator && _qualityIndicator.ReachTopviewAngle)
+    { reason = "Evita vista superior; rodea desde varios lados."; return false; }
 
-      // umbral de calidad
-      bool ok = (q >= minQualityToHost);
-      if (requireIndicatorCoverage && _qualityIndicator)
-          ok &= _qualityIndicator.ReachQualityThreshold;
+    // umbral de calidad
+    bool ok = (q >= minQualityToHost);
+    if (requireIndicatorCoverage && _qualityIndicator)
+      ok &= _qualityIndicator.ReachQualityThreshold;
 
-      reason = ok ? "Calidad OK" : $"Calidad insuficiente ({q})";
-      return ok;
+    reason = ok ? "Calidad OK" : $"Calidad insuficiente ({q})";
+    return ok;
   }
 
   IEnumerator WaitHostResult()
@@ -283,15 +274,16 @@ public class AnchorSceneController : MonoBehaviour
       }
 
 
-      if (botonguardar) botonguardar.SetActive(false);  // <-- oculto tras guardar
       if (_qualityIndicator) { Destroy(_qualityIndicator.gameObject); _qualityIndicator = null; }
+
+      botonguardar.SetActive(true);
 
     }
     else
     {
-      Log($"Host FAILED: {host.CloudAnchorState}. Mejora el mapeo y vuelve a intentar.");
+      Log($"Host FAILED: {host.CloudAnchorState}. Reinicia la app");
       // puedes volver a activar captura si quieres:
-      _mappingActive = true;
+      //_mappingActive = true;
       _sinceMapStart = 0f;
     }
   }
@@ -326,8 +318,8 @@ public class AnchorSceneController : MonoBehaviour
       }
       else
       {
-        Log($"Resolve FAILED: {res.CloudAnchorState}. Reintento en 1.5s.");
-        yield return new WaitForSeconds(1.5f);
+        Log($"Resolve FAILED: {res.CloudAnchorState}. Reintento en 10.5s.");
+        yield return new WaitForSeconds(10.5f);
       }
       yield return null;
     }
@@ -440,6 +432,8 @@ public class AnchorSceneController : MonoBehaviour
       if (_visual == null && anchorVisualPrefab) _visual = Instantiate(anchorVisualPrefab, _visualRoot);
       _visualRoot.localRotation = Quaternion.Euler(0f, yaw, 0f);
 
+      
+
       Debug.Log($"[LAN] Resolved & applied yaw {yaw:0.##}°");
       lan?.SendStatus("resolving_ok");
     }
@@ -462,13 +456,15 @@ public class AnchorSceneController : MonoBehaviour
       _visual = Instantiate(anchorVisualPrefab, _visualRoot);
     else if (_visual != null && _visual.transform.parent != _visualRoot)
       _visual.transform.SetParent(_visualRoot, true);
+     
   }
-  
+
   void OnDestroy()
   {
-      if (lan != null)
-      {
-          lan.OnAnchorShared -= OnAnchorShared;          
-      }
+    if (lan != null)
+    {
+      lan.OnAnchorShared -= OnAnchorShared;
+    }
   }
+  
 }

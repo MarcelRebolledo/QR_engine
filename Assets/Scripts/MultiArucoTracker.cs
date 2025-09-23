@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Collections;
 using UnityEngine;
+using Unity.XR.CoreUtils;         // XROrigin
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 using ArucoUnity.Plugin;
@@ -13,10 +14,12 @@ using UnityEngine.UI;
 using System.Linq;
 
 
+
+
 public sealed class MultiArucoTracker : MonoBehaviour
 {
-    const int   MAX_CONTENT_NODES = 15; // ⟵ máximo de prefabs simultáneos
-    const float DEBUG_FPS         = 4f;
+    const int MAX_CONTENT_NODES = 5; // ⟵ máximo de prefabs simultáneos
+    const float DEBUG_FPS = 4f;
 
     // ────────────────── Inspector ──────────────────
     [Header("Managers")]
@@ -27,7 +30,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
     public GameObject defaultPrefab;                // antes: contentPrefab
 
     // NEW: lista editable en Inspector
-    [System.Serializable] public struct IdPrefabPair
+    [System.Serializable]
+    public struct IdPrefabPair
     {
         public int id;
         public GameObject prefab;
@@ -41,27 +45,32 @@ public sealed class MultiArucoTracker : MonoBehaviour
         Aruco.PredefinedDictionaryName.Dict4x4_50;
 
     [Header("Debug UI")]
-    public TMP_Text  debugText;
+    public TMP_Text debugText;
 
-   
+
     // ────────────────── Internos ──────────────────
-    Aruco.Dictionary        dictionary;
+    Aruco.Dictionary dictionary;
     Aruco.DetectorParameters detectorParams;
 
     readonly Dictionary<int, Transform> markerNodes = new();
     readonly Dictionary<int, GameObject> prefabLookup = new();   // NEW
 
-    ARAnchor rootAnchor;                   // único anchor raíz
+    Transform arucoRoot;                  // único anchor raíz
 
     Cv.Mat cameraMatrix, distCoeffs;
-    bool   intrinsicsInit;
+    bool intrinsicsInit;
     readonly StringBuilder logBuffer = new();
-    float  nextDebugUpdate;
+    float nextDebugUpdate;
     bool warnedNoSize, warnedNoPrefab;
+
+    // ────────────────── espacio ar ──────────────────
+    [Header("ARF Integration")]
+    [SerializeField] Transform trackablesParent;
+    [SerializeField] XROrigin xrOrigin; 
 
     // ────────────────── Init ──────────────────
 
-     void Start()
+    void Start()
     {
         Screen.sleepTimeout = SleepTimeout.NeverSleep;
     }
@@ -71,13 +80,32 @@ public sealed class MultiArucoTracker : MonoBehaviour
         // Restaurar el comportamiento por defecto (opcional)
         Screen.sleepTimeout = SleepTimeout.SystemSetting;
     }
-    
+
     void Awake()
     {
-        camManager    ??= GetComponent<ARCameraManager>();
+        camManager ??= GetComponent<ARCameraManager>();
+          // 1) Encuentra XROrigin y toma su TrackablesParent (AR Foundation 6.x)
+        if (xrOrigin == null)
+        xrOrigin = FindAnyObjectByType<XROrigin>();
+        if (trackablesParent == null && xrOrigin != null)
+            trackablesParent = xrOrigin.TrackablesParent;
+
+        // 2) Fallback: intenta buscar un hijo llamado "Trackables" bajo el XROrigin
+        if (trackablesParent == null && xrOrigin != null)
+        {
+            var t = xrOrigin.transform.Find("Trackables");
+            if (t) trackablesParent = t;
+        }
+
+        if (trackablesParent == null)
+            Debug.LogError("[MultiArucoTracker] No se encontró TrackablesParent. " +
+                        "Asigna en el Inspector: XR Origin (AR Rig)/Trackables.");
 
 
-        rootAnchor = new GameObject("RootAnchor").AddComponent<ARAnchor>();
+
+        // En vez de ARAnchor suelto: cuelga todo bajo Trackables (mismo marco espacial que el mapa)
+        arucoRoot = new GameObject("ArucoRoot").transform;
+        if (trackablesParent) arucoRoot.SetParent(trackablesParent, false);
 
         // NEW: pasa lista a diccionario en O(1)
         foreach (var pair in customPrefabs)
@@ -102,17 +130,17 @@ public sealed class MultiArucoTracker : MonoBehaviour
         distCoeffs   = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
     }
 
-    void OnEnable()  => camManager.frameReceived += OnFrame;
+    void OnEnable() => camManager.frameReceived += OnFrame;
     void OnDisable() => camManager.frameReceived -= OnFrame;
 
     void OnValidate()
     {
-    #if UNITY_EDITOR
+#if UNITY_EDITOR
         if (markerSideMeters <= 0f)
             Debug.LogWarning("[MultiArucoTracker] Marker Side Meters debe ser > 0 para estimar pose.");
         if (!defaultPrefab && (customPrefabs == null || customPrefabs.Count == 0))
             Debug.LogWarning("[MultiArucoTracker] Asigna Default Prefab o al menos un Custom Prefab.");
-    #endif
+#endif
     }
 
     void WarnOnce(ref bool flag, string msg)
@@ -121,7 +149,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
     }
 
     // ────────────────── Frame loop ──────────────────
-    void OnFrame(ARCameraFrameEventArgs _){
+    void OnFrame(ARCameraFrameEventArgs _)
+    {
 
         if (!camManager || !camManager.TryAcquireLatestCpuImage(out var cpuImage))
             return;
@@ -137,10 +166,10 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
         var conv = new XRCpuImage.ConversionParams
         {
-            inputRect        = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+            inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
             outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat     = TextureFormat.R8,
-            transformation   = XRCpuImage.Transformation.None
+            outputFormat = TextureFormat.R8,
+            transformation = XRCpuImage.Transformation.None
         };
 
         int byteCount = cpuImage.GetConvertedDataSize(conv);
@@ -167,7 +196,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
                     markerNodes.Remove(kv.Key);
                 }
             }
-            
+
             return;
         }
 
@@ -204,7 +233,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
                 continue;
             }
 
-            Vector3    localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
+            Vector3 localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
             Quaternion localRot = Cv2UnityRot(rvecs.At((uint)i), portrait);
 
             if (!markerNodes.TryGetValue(id, out var node) || !node)
@@ -214,7 +243,7 @@ public sealed class MultiArucoTracker : MonoBehaviour
                 var go = Instantiate(prefab);
                 go.name = $"aruco_{id}";
                 node = go.transform;
-                node.SetParent(rootAnchor.transform, worldPositionStays: true);
+                node.SetParent(arucoRoot, worldPositionStays: true);
                 markerNodes[id] = node;
             }
 
@@ -222,8 +251,8 @@ public sealed class MultiArucoTracker : MonoBehaviour
             Vector3 worldPos = camManager.transform.TransformPoint(localPos);
             Quaternion worldRot = camManager.transform.rotation * localRot;
 
-            node.localPosition = rootAnchor.transform.InverseTransformPoint(worldPos);
-            node.localRotation = Quaternion.Inverse(rootAnchor.transform.rotation) * worldRot;
+            node.position = worldPos;
+            node.rotation = worldRot;
         }
 
         // eliminar perdidos
@@ -233,30 +262,43 @@ public sealed class MultiArucoTracker : MonoBehaviour
             markerNodes.Remove(kv.Key);
         }
 
-        
-            Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size() > 20 ? "…" : "")}");
+
+        //Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size() > 20 ? "…" : "")}");
     }
 
     // ───────── conversion helpers ─────────
-    static Vector3 Cv2UnityPos(Cv.Vec3d t,bool portrait)
+    static Vector3 Cv2UnityPos(Cv.Vec3d t, bool portrait)
     {
-        double x=t.Get(0), y=t.Get(1), z=t.Get(2);
-        if (portrait){ (x,y)=(y,x); }
-        x=-x; y=-y;
-        return new((float)x,(float)y,(float)z);
+        double x = t.Get(0), y = t.Get(1), z = t.Get(2);
+        if (portrait) { (x, y) = (y, x); }
+        x = -x; y = -y;
+        return new((float)x, (float)y, (float)z);
     }
-    static Quaternion Cv2UnityRot(Cv.Vec3d r,bool portrait)
+    static Quaternion Cv2UnityRot(Cv.Vec3d r, bool portrait)
     {
-        double x=r.Get(0), y=r.Get(1), z=r.Get(2);
-        if (portrait){ (x,y)=(y,x); }
-        x=-x; y=-y; z=-z;
-        double ang=Mathf.Sqrt((float)(x*x+y*y+z*z));
-        if (ang<1e-12) return Quaternion.identity;
-        Vector3 axis=new((float)(x/ang),(float)(y/ang),(float)(z/ang));
-        return Quaternion.AngleAxis((float)(ang*Mathf.Rad2Deg), axis);
+        double x = r.Get(0), y = r.Get(1), z = r.Get(2);
+        if (portrait) { (x, y) = (y, x); }
+        x = -x; y = -y; z = -z;
+        double ang = Mathf.Sqrt((float)(x * x + y * y + z * z));
+        if (ang < 1e-12) return Quaternion.identity;
+        Vector3 axis = new((float)(x / ang), (float)(y / ang), (float)(z / ang));
+        return Quaternion.AngleAxis((float)(ang * Mathf.Rad2Deg), axis);
     }
 
     // ───────── debug helpers ─────────
 
     void Log(string m) { Debug.Log(m); if (debugText) debugText.text = m; }
+    
+    public bool TryGetMarkerPose(int id, out Vector3 worldPos, out Quaternion worldRot)
+    {
+        if (markerNodes.TryGetValue(id, out var node) && node)
+        {
+            worldPos = node.position;
+            worldRot = node.rotation;
+            return true;
+        }
+        worldPos = default;
+        worldRot = default;
+        return false;
+    }
 }
