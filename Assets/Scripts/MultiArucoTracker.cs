@@ -10,11 +10,8 @@ using Aruco= ArucoUnity.Plugin.Aruco;
 using Std  = ArucoUnity.Plugin.Std;
 using TMPro;
 using System.Text;
-using UnityEngine.UI;
 using System.Linq;
-
-
-
+using System.Collections;
 
 public sealed class MultiArucoTracker : MonoBehaviour
 {
@@ -25,39 +22,31 @@ public sealed class MultiArucoTracker : MonoBehaviour
     [Header("Managers")]
     [SerializeField] ARCameraManager camManager;
 
-
     [Header("Prefabs")]
-    public GameObject defaultPrefab;                // antes: contentPrefab
+    public GameObject defaultPrefab;
 
-    // NEW: lista editable en Inspector
     [System.Serializable]
-    public struct IdPrefabPair
-    {
-        public int id;
-        public GameObject prefab;
-    }
+    public struct IdPrefabPair { public int id; public GameObject prefab; }
     [Tooltip("Asignar un prefab distinto para IDs concretos")]
-    public List<IdPrefabPair> customPrefabs = new();  // ← se ve como tabla
+    public List<IdPrefabPair> customPrefabs = new();
 
     [Header("Detection Settings")]
     public float markerSideMeters = 0.025f;
     [SerializeField, Range(0.001f, 0.01f)]
     float stepSize = 0.01f;
-    public Aruco.PredefinedDictionaryName dictionaryName =
-        Aruco.PredefinedDictionaryName.Dict4x4_50;
+    public Aruco.PredefinedDictionaryName dictionaryName = Aruco.PredefinedDictionaryName.Dict4x4_50;
 
     [Header("Debug UI")]
     public TMP_Text debugText;
-
 
     // ────────────────── Internos ──────────────────
     Aruco.Dictionary dictionary;
     Aruco.DetectorParameters detectorParams;
 
     readonly Dictionary<int, Transform> markerNodes = new();
-    readonly Dictionary<int, GameObject> prefabLookup = new();   // NEW
+    readonly Dictionary<int, GameObject> prefabLookup = new();
 
-    Transform arucoRoot;                  // único anchor raíz
+    Transform arucoRoot;
 
     Cv.Mat cameraMatrix, distCoeffs;
     bool intrinsicsInit;
@@ -65,12 +54,21 @@ public sealed class MultiArucoTracker : MonoBehaviour
     float nextDebugUpdate;
     bool warnedNoSize, warnedNoPrefab;
 
-    // ────────────────── espacio ar ──────────────────
     [Header("ARF Integration")]
     [SerializeField] Transform trackablesParent;
     [SerializeField] XROrigin xrOrigin;
 
-    // ────────────────── Init ──────────────────
+    // ─── WATCHDOG / RESILIENCIA ───
+    [Header("Resiliencia")]
+    [Tooltip("Segundos sin frames para considerar 'detención' y reiniciar la detección.")]
+    public float stallSeconds = 2.0f;
+    [Tooltip("Backoff entre intentos de re-suscripción.")]
+    public float restartBackoffSeconds = 0.5f;
+    float _lastHeartbeat;               // Time.realtimeSinceStartup del último frame recibido
+    Coroutine _watchdogCo;
+    bool _subscribed;
+    bool _processingFrame;              // evita reentradas si llega otro frame durante procesamiento
+    int _restartCount;
 
     void Start()
     {
@@ -79,37 +77,26 @@ public sealed class MultiArucoTracker : MonoBehaviour
 
     void OnApplicationQuit()
     {
-        // Restaurar el comportamiento por defecto (opcional)
         Screen.sleepTimeout = SleepTimeout.SystemSetting;
     }
 
     void Awake()
     {
         camManager ??= GetComponent<ARCameraManager>();
-        // 1) Encuentra XROrigin y toma su TrackablesParent (AR Foundation 6.x)
-        if (xrOrigin == null)
-            xrOrigin = FindAnyObjectByType<XROrigin>();
-        if (trackablesParent == null && xrOrigin != null)
-            trackablesParent = xrOrigin.TrackablesParent;
 
-        // 2) Fallback: intenta buscar un hijo llamado "Trackables" bajo el XROrigin
+        if (xrOrigin == null) xrOrigin = FindAnyObjectByType<XROrigin>();
+        if (trackablesParent == null && xrOrigin != null) trackablesParent = xrOrigin.TrackablesParent;
         if (trackablesParent == null && xrOrigin != null)
         {
             var t = xrOrigin.transform.Find("Trackables");
             if (t) trackablesParent = t;
         }
-
         if (trackablesParent == null)
-            Debug.LogError("[MultiArucoTracker] No se encontró TrackablesParent. " +
-                        "Asigna en el Inspector: XR Origin (AR Rig)/Trackables.");
+            Debug.LogError("[MultiArucoTracker] No se encontró TrackablesParent. Asigna XR Origin/Trackables.");
 
-
-
-        // En vez de ARAnchor suelto: cuelga todo bajo Trackables (mismo marco espacial que el mapa)
         arucoRoot = new GameObject("ArucoRoot").transform;
         if (trackablesParent) arucoRoot.SetParent(trackablesParent, false);
 
-        // NEW: pasa lista a diccionario en O(1)
         foreach (var pair in customPrefabs)
             prefabLookup[pair.id] = pair.prefab ? pair.prefab : defaultPrefab;
 
@@ -132,8 +119,91 @@ public sealed class MultiArucoTracker : MonoBehaviour
         distCoeffs = new Cv.Mat(1, 5, Cv.Type.CV_64F, new double[5]);
     }
 
-    void OnEnable() => camManager.frameReceived += OnFrame;
-    void OnDisable() => camManager.frameReceived -= OnFrame;
+    void OnEnable()
+    {
+        SafeSubscribe();
+        _watchdogCo = StartCoroutine(WatchdogLoop());
+    }
+
+    void OnDisable()
+    {
+        if (_watchdogCo != null) { StopCoroutine(_watchdogCo); _watchdogCo = null; }
+        SafeUnsubscribe();
+    }
+
+    void OnApplicationPause(bool paused)
+    {
+        // Al volver de pausa, espera un frame y re-suscribe para recuperar el evento si se perdió
+        if (!paused) StartCoroutine(ResumeAfterPause());
+    }
+
+    IEnumerator ResumeAfterPause()
+    {
+        yield return null; // esperar 1 frame
+        ForceRestartDetection();
+    }
+
+    void SafeSubscribe()
+    {
+        if (camManager == null || _subscribed) return;
+        camManager.frameReceived += OnFrame;
+        _subscribed = true;
+        _lastHeartbeat = Time.realtimeSinceStartup;
+        // Opcional: Log($"Suscrito a frameReceived. (reinicios: {_restartCount})");
+    }
+
+    void SafeUnsubscribe()
+    {
+        if (camManager == null || !_subscribed) return;
+        camManager.frameReceived -= OnFrame;
+        _subscribed = false;
+    }
+
+    IEnumerator WatchdogLoop()
+    {
+        var wait = new WaitForSeconds(restartBackoffSeconds);
+        while (true)
+        {
+            yield return wait;
+
+            // Si AR no está tracking, no reiniciar agresivamente
+            if (ARSession.state == ARSessionState.None ||
+                ARSession.state == ARSessionState.CheckingAvailability ||
+                ARSession.state == ARSessionState.NeedsInstall ||
+                ARSession.state == ARSessionState.Installing ||
+                ARSession.state == ARSessionState.Ready ||
+                ARSession.state == ARSessionState.SessionInitializing)
+            {
+                // Aún no hay tracking estable; reinicia el latido para no disparar falsos positivos
+                _lastHeartbeat = Time.realtimeSinceStartup;
+                continue;
+            }
+
+            // Si estamos en Tracking pero sin latidos por 'stallSeconds' → reintentar
+            if (Time.realtimeSinceStartup - _lastHeartbeat > stallSeconds)
+            {
+                ForceRestartDetection();
+            }
+        }
+    }
+
+    /// <summary>Reinicia la suscripción al evento y re-inicializa buffers livianos.</summary>
+    public void ForceRestartDetection()
+    {
+        _restartCount++;
+        SafeUnsubscribe();
+
+        // Limpia estados que podrían haber quedado inconsistentes
+        _processingFrame = false;
+
+        // (OPCIONAL) Limpia nodos si quieres forzar re-poblado al volver a detectar:
+        // foreach (var kv in markerNodes.ToList()) { if (kv.Value) Destroy(kv.Value.gameObject); }
+        // markerNodes.Clear();
+
+        // Re-suscribe
+        SafeSubscribe();
+        Log($"[Aruco] Watchdog: reinicio #{_restartCount} (ARState={ARSession.state})");
+    }
 
     void OnValidate()
     {
@@ -153,119 +223,124 @@ public sealed class MultiArucoTracker : MonoBehaviour
     // ────────────────── Frame loop ──────────────────
     void OnFrame(ARCameraFrameEventArgs _)
     {
+        // Latido al inicio: si el evento llega, hay “vida”
+        _lastHeartbeat = Time.realtimeSinceStartup;
 
-        if (!camManager || !camManager.TryAcquireLatestCpuImage(out var cpuImage))
-            return;
+        if (_processingFrame) return; // evita reentradas si el dispositivo dispara frames muy rápido
+        _processingFrame = true;
 
-        if (!intrinsicsInit && camManager.TryGetIntrinsics(out var intr))
+        try
         {
-            cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, new double[] {
-                intr.focalLength.x, 0, intr.principalPoint.x,
-                0, intr.focalLength.y, intr.principalPoint.y,
-                0, 0, 1 });
-            intrinsicsInit = true;
-        }
+            if (!camManager || !camManager.TryAcquireLatestCpuImage(out var cpuImage))
+                return;
 
-        var conv = new XRCpuImage.ConversionParams
-        {
-            inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
-            outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
-            outputFormat = TextureFormat.R8,
-            transformation = XRCpuImage.Transformation.None
-        };
-
-        int byteCount = cpuImage.GetConvertedDataSize(conv);
-        using var buffer = new NativeArray<byte>(byteCount, Allocator.Temp);
-        cpuImage.Convert(conv, buffer);
-        cpuImage.Dispose();
-
-        bool portrait = Screen.orientation is ScreenOrientation.Portrait or ScreenOrientation.PortraitUpsideDown;
-        var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, buffer.ToArray());
-
-        Std.VectorVectorPoint2f corners;
-        Std.VectorInt ids;
-        Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
-
-        // Nada detectado → limpia perdidos y debug opcional
-        if (ids.Size() == 0)
-        {
-            // elimina todo lo que estaba y ya no está
-            if (markerNodes.Count > 0)
+            if (!intrinsicsInit && camManager.TryGetIntrinsics(out var intr))
             {
-                foreach (var kv in markerNodes.ToList())
+                cameraMatrix = new Cv.Mat(3, 3, Cv.Type.CV_64F, new double[] {
+                    intr.focalLength.x, 0, intr.principalPoint.x,
+                    0, intr.focalLength.y, intr.principalPoint.y,
+                    0, 0, 1 });
+                intrinsicsInit = true;
+            }
+
+            var conv = new XRCpuImage.ConversionParams
+            {
+                inputRect = new RectInt(0, 0, cpuImage.width, cpuImage.height),
+                outputDimensions = new Vector2Int(cpuImage.width, cpuImage.height),
+                outputFormat = TextureFormat.R8,
+                transformation = XRCpuImage.Transformation.None
+            };
+
+            int byteCount = cpuImage.GetConvertedDataSize(conv);
+            using var buffer = new NativeArray<byte>(byteCount, Allocator.Temp);
+            cpuImage.Convert(conv, buffer);
+            cpuImage.Dispose();
+
+            bool portrait = Screen.orientation is ScreenOrientation.Portrait or ScreenOrientation.PortraitUpsideDown;
+            var frame = new Cv.Mat(conv.outputDimensions.y, conv.outputDimensions.x, Cv.Type.CV_8UC1, buffer.ToArray());
+
+            Std.VectorVectorPoint2f corners;
+            Std.VectorInt ids;
+            Aruco.DetectMarkers(frame, dictionary, out corners, out ids, detectorParams);
+
+            if (ids.Size() == 0)
+            {
+                if (markerNodes.Count > 0)
                 {
-                    Destroy(kv.Value.gameObject);
-                    markerNodes.Remove(kv.Key);
+                    foreach (var kv in markerNodes.ToList())
+                    {
+                        if (kv.Value) Destroy(kv.Value.gameObject);
+                        markerNodes.Remove(kv.Key);
+                    }
                 }
+                return;
             }
 
-            return;
-        }
-
-        // Sin tamaño válido → no podemos estimar pose de ArUco
-        if (markerSideMeters <= 0f)
-        {
-            WarnOnce(ref warnedNoSize, "[MultiArucoTracker] Estimación de pose deshabilitada: asigna Marker Side Meters > 0 (por ej. 0.025f para 25 mm).");
-            Log($"Markers: {ids.Size()} (sin pose; MarkerSideMeters<=0)");
-            return;
-        }
-
-        Std.VectorVec3d rvecs = null, tvecs = null;
-        Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
-
-        // Seguridad extra
-        if (rvecs == null || tvecs == null || rvecs.Size() != ids.Size() || tvecs.Size() != ids.Size())
-        {
-            Log("Detectados sin rvecs/tvecs válidos");
-            return;
-        }
-
-        var detected = new HashSet<int>();
-
-        for (int i = 0; i < ids.Size(); ++i)
-        {
-            int id = ids.At((uint)i);
-            detected.Add(id);
-
-            // Selección de prefab
-            GameObject prefab = prefabLookup.TryGetValue(id, out var custom) ? custom : defaultPrefab;
-            if (!prefab)
+            if (markerSideMeters <= 0f)
             {
-                WarnOnce(ref warnedNoPrefab, $"[MultiArucoTracker] No hay prefab asignado (ID {id}). Asigna Default Prefab o uno en Custom Prefabs.");
-                continue;
+                WarnOnce(ref warnedNoSize, "[MultiArucoTracker] Estimación de pose deshabilitada: asigna Marker Side Meters > 0.");
+                Log($"Markers: {ids.Size()} (sin pose; MarkerSideMeters<=0)");
+                return;
             }
 
-            Vector3 localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
-            Quaternion localRot = Cv2UnityRot(rvecs.At((uint)i), portrait);
+            Std.VectorVec3d rvecs = null, tvecs = null;
+            Aruco.EstimatePoseSingleMarkers(corners, markerSideMeters, cameraMatrix, distCoeffs, out rvecs, out tvecs);
 
-            if (!markerNodes.TryGetValue(id, out var node) || !node)
+            if (rvecs == null || tvecs == null || rvecs.Size() != ids.Size() || tvecs.Size() != ids.Size())
             {
-                if (markerNodes.Count >= MAX_CONTENT_NODES) continue;
-
-                var go = Instantiate(prefab);
-                go.name = $"aruco_{id}";
-                node = go.transform;
-                node.SetParent(arucoRoot, worldPositionStays: true);
-                markerNodes[id] = node;
+                Log("Detectados sin rvecs/tvecs válidos");
+                return;
             }
 
-            // AR pose → mundo → raíz
-            Vector3 worldPos = camManager.transform.TransformPoint(localPos);
-            Quaternion worldRot = camManager.transform.rotation * localRot;
+            var detected = new HashSet<int>();
 
-            node.position = worldPos;
-            node.rotation = worldRot;
+            for (int i = 0; i < ids.Size(); ++i)
+            {
+                int id = ids.At((uint)i);
+                detected.Add(id);
+
+                GameObject prefab = prefabLookup.TryGetValue(id, out var custom) ? custom : defaultPrefab;
+                if (!prefab)
+                {
+                    WarnOnce(ref warnedNoPrefab, $"[MultiArucoTracker] No hay prefab asignado (ID {id}).");
+                    continue;
+                }
+
+                Vector3 localPos = Cv2UnityPos(tvecs.At((uint)i), portrait);
+                Quaternion localRot = Cv2UnityRot(rvecs.At((uint)i), portrait);
+
+                if (!markerNodes.TryGetValue(id, out var node) || !node)
+                {
+                    if (markerNodes.Count >= MAX_CONTENT_NODES) continue;
+                    var go = Instantiate(prefab);
+                    go.name = $"aruco_{id}";
+                    node = go.transform;
+                    node.SetParent(arucoRoot, worldPositionStays: true);
+                    markerNodes[id] = node;
+                }
+
+                Vector3 worldPos = camManager.transform.TransformPoint(localPos);
+                Quaternion worldRot = camManager.transform.rotation * localRot;
+
+                node.position = worldPos;
+                node.rotation = worldRot;
+            }
+
+            foreach (var kv in markerNodes.Where(k => !detected.Contains(k.Key)).ToList())
+            {
+                if (kv.Value) Destroy(kv.Value.gameObject);
+                markerNodes.Remove(kv.Key);
+            }
         }
-
-        // eliminar perdidos
-        foreach (var kv in markerNodes.Where(k => !detected.Contains(k.Key)).ToList())
+        catch (System.Exception ex)
         {
-            Destroy(kv.Value.gameObject);
-            markerNodes.Remove(kv.Key);
+            // Cualquier excepción NO mata el loop. Loguea y deja que el watchdog re-suscriba si el evento se corta.
+            Debug.LogError($"[Aruco] Excepción en OnFrame: {ex.GetType().Name} - {ex.Message}");
         }
-
-
-        //Log($"Markers: {ids.Size()} | IDs: {string.Join(",", detected.Take(20))}{(ids.Size() > 20 ? "…" : "")}");
+        finally
+        {
+            _processingFrame = false;
+        }
     }
 
     // ───────── conversion helpers ─────────
@@ -288,7 +363,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
     }
 
     // ───────── debug helpers ─────────
-
     void Log(string m) { Debug.Log(m); if (debugText) debugText.text = m; }
 
     public bool TryGetMarkerPose(int id, out Vector3 worldPos, out Quaternion worldRot)
@@ -303,7 +377,6 @@ public sealed class MultiArucoTracker : MonoBehaviour
         worldRot = default;
         return false;
     }
-    
 
     public void IncreaseMarkerSize()
     {
